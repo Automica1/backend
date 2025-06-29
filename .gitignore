@@ -1,0 +1,36 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Compiled Go binaries
+/main
+/server
+/app
+*.bin
+
+# OS/IDE/editor files
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE/editor-specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependency directories
+vendor/         # if using vendoring
+
+# Environment / secrets
+.env
+.env.*
+config.yaml
+secrets.yaml
+
+# Go tools
+coverage.out
