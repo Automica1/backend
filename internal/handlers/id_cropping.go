@@ -17,6 +17,7 @@ type IDCroppingHandler struct {
 	creditsService services.CreditsService
 	userService    services.UserService
 	idAPIService   services.IDCroppingAPIService
+	errorMapper    *apperrors.APIErrorMapper
 }
 
 func NewIDCroppingHandler(creditsService services.CreditsService, userService services.UserService, idAPIService services.IDCroppingAPIService) *IDCroppingHandler {
@@ -24,6 +25,7 @@ func NewIDCroppingHandler(creditsService services.CreditsService, userService se
 		creditsService: creditsService,
 		userService:    userService,
 		idAPIService:   idAPIService,
+		errorMapper:    apperrors.NewAPIErrorMapper(),
 	}
 }
 
@@ -123,11 +125,9 @@ func (h *IDCroppingHandler) ProcessIDCropping(w http.ResponseWriter, r *http.Req
 
 	// Check if the API returned success
 	if cropResult == nil || !cropResult.Success {
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrInternalServer,
-			http.StatusBadRequest,
-			cropResult.Message,
-		))
+		// Use the error mapper to convert technical error to user-friendly message
+		apiError := apperrors.NewAPIError(h.errorMapper, cropResult.Message)
+		utils.SendErrorResponse(w, apiError)
 		return
 	}
 

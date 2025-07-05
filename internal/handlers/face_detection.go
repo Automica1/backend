@@ -17,6 +17,7 @@ type FaceDetectionHandler struct {
 	creditsService services.CreditsService
 	userService    services.UserService
 	faceAPIService services.FaceDetectionAPIService
+	errorMapper    *apperrors.APIErrorMapper
 }
 
 func NewFaceDetectionHandler(creditsService services.CreditsService, userService services.UserService, faceAPIService services.FaceDetectionAPIService) *FaceDetectionHandler {
@@ -24,6 +25,7 @@ func NewFaceDetectionHandler(creditsService services.CreditsService, userService
 		creditsService: creditsService,
 		userService:    userService,
 		faceAPIService: faceAPIService,
+		errorMapper:    apperrors.NewAPIErrorMapper(),
 	}
 }
 
@@ -123,11 +125,9 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 
 	// Check if the API returned success
 	if faceResult == nil || !faceResult.Success {
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrInternalServer,
-			http.StatusBadRequest,
-			faceResult.Message,
-		))
+		// Use the error mapper to convert technical error to user-friendly message
+		apiError := apperrors.NewAPIError(h.errorMapper, faceResult.Message)
+		utils.SendErrorResponse(w, apiError)
 		return
 	}
 

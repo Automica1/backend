@@ -14,16 +14,18 @@ import (
 )
 
 type SignatureVerificationHandler struct {
-	creditsService             services.CreditsService
-	userService               services.UserService
-	signatureAPIService       services.SignatureVerificationAPIService
+	creditsService      services.CreditsService
+	userService         services.UserService
+	signatureAPIService services.SignatureVerificationAPIService
+	errorMapper         *apperrors.APIErrorMapper
 }
 
 func NewSignatureVerificationHandler(creditsService services.CreditsService, userService services.UserService, signatureAPIService services.SignatureVerificationAPIService) *SignatureVerificationHandler {
 	return &SignatureVerificationHandler{
 		creditsService:      creditsService,
-		userService:        userService,
+		userService:         userService,
 		signatureAPIService: signatureAPIService,
+		errorMapper:         apperrors.NewAPIErrorMapper(),
 	}
 }
 
@@ -123,11 +125,9 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	// Check if the API returned success
 	if verificationResult == nil || !verificationResult.Success {
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrInternalServer,
-			http.StatusBadRequest,
-			verificationResult.Message,
-		))
+		// Use the error mapper to convert technical error to user-friendly message
+		apiError := apperrors.NewAPIError(h.errorMapper, verificationResult.Message)
+		utils.SendErrorResponse(w, apiError)
 		return
 	}
 

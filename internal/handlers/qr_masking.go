@@ -17,6 +17,7 @@ type QRMaskingHandler struct {
 	creditsService services.CreditsService
 	userService    services.UserService
 	qrAPIService   services.QRMaskingAPIService
+	errorMapper    *apperrors.APIErrorMapper
 }
 
 func NewQRMaskingHandler(creditsService services.CreditsService, userService services.UserService, qrAPIService services.QRMaskingAPIService) *QRMaskingHandler {
@@ -24,6 +25,7 @@ func NewQRMaskingHandler(creditsService services.CreditsService, userService ser
 		creditsService: creditsService,
 		userService:    userService,
 		qrAPIService:   qrAPIService,
+		errorMapper:    apperrors.NewAPIErrorMapper(),
 	}
 }
 
@@ -110,26 +112,24 @@ func (h *QRMaskingHandler) ProcessQRMasking(w http.ResponseWriter, r *http.Reque
 
 	// Process QR masking via external API
 	qrResult, err := h.qrAPIService.ProcessQRMasking(ctx, &req)
-if err != nil {
-	utils.SendErrorResponse(w, apperrors.NewAppError(
-		apperrors.ErrInternalServer,
-		http.StatusInternalServerError,
-		"QR masking operation failed: "+err.Error(),
-	))
-	return
-}
+	if err != nil {
+		utils.SendErrorResponse(w, apperrors.NewAppError(
+			apperrors.ErrInternalServer,
+			http.StatusInternalServerError,
+			"QR masking operation failed: "+err.Error(),
+		))
+		return
+	}
 
-fmt.Printf("QR Masking API Result: %+v\n", qrResult) // <-- ADD THIS
+	fmt.Printf("QR Masking API Result: %+v\n", qrResult) // Debug log
 
 	// Check if the API returned success
 	if qrResult == nil || !qrResult.Success {
-	utils.SendErrorResponse(w, apperrors.NewAppError(
-		apperrors.ErrInternalServer,
-		http.StatusBadRequest,
-		qrResult.Message,
-	))
-	return
-}
+		// Use the error mapper to convert technical error to user-friendly message
+		apiError := apperrors.NewAPIError(h.errorMapper, qrResult.Message)
+		utils.SendErrorResponse(w, apiError)
+		return
+	}
 
 	// API success: true - deduct 2 credits from user
 	deductReq := &models.DeductCreditsRequest{

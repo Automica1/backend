@@ -17,6 +17,7 @@ type QRExtractionHandler struct {
 	creditsService services.CreditsService
 	userService    services.UserService
 	qrAPIService   services.QRExtractionAPIService
+	errorMapper    *apperrors.APIErrorMapper
 }
 
 func NewQRExtractionHandler(creditsService services.CreditsService, userService services.UserService, qrAPIService services.QRExtractionAPIService) *QRExtractionHandler {
@@ -24,6 +25,7 @@ func NewQRExtractionHandler(creditsService services.CreditsService, userService 
 		creditsService: creditsService,
 		userService:    userService,
 		qrAPIService:   qrAPIService,
+		errorMapper:    apperrors.NewAPIErrorMapper(),
 	}
 }
 
@@ -123,11 +125,9 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 
 	// Check if the API returned success
 	if qrResult == nil || !qrResult.Success {
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrInternalServer,
-			http.StatusBadRequest,
-			qrResult.Message,
-		))
+		// Use the error mapper to convert technical error to user-friendly message
+		apiError := apperrors.NewAPIError(h.errorMapper, qrResult.Message)
+		utils.SendErrorResponse(w, apiError)
 		return
 	}
 
