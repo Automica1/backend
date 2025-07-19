@@ -4,6 +4,7 @@ package handlers
 import (
 	"net/http"
 
+	"chi-mongo-backend/internal/middleware"
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
 	apperrors "chi-mongo-backend/pkg/errors"
@@ -12,7 +13,7 @@ import (
 
 type CreditsHandler struct {
 	creditsService services.CreditsService
-	userService    services.UserService // Add user service for auto-creation
+	userService    services.UserService
 }
 
 func NewCreditsHandler(creditsService services.CreditsService, userService services.UserService) *CreditsHandler {
@@ -24,7 +25,7 @@ func NewCreditsHandler(creditsService services.CreditsService, userService servi
 
 func (h *CreditsHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 	// Get email from context (set by auth middleware)
-	email, ok := r.Context().Value("email").(string)
+	email, ok := middleware.GetEmailFromContext(r.Context())
 	if !ok {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrUnauthorized,
@@ -71,6 +72,16 @@ func (h *CreditsHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *CreditsHandler) AddCredits(w http.ResponseWriter, r *http.Request) {
+	// Check if user is admin
+	if !middleware.IsAdminFromContext(r.Context()) {
+		utils.SendErrorResponse(w, apperrors.NewAppError(
+			apperrors.ErrForbidden,
+			http.StatusForbidden,
+			"admin access required to add credits",
+		))
+		return
+	}
+
 	var req models.AddCreditsRequest
 	if err := utils.DecodeJSONBody(r, &req); err != nil {
 		utils.SendErrorResponse(w, err)

@@ -18,10 +18,18 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// JWT Claims structure for Kinde
+// Role structure for Kinde roles
+type Role struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+// JWT Claims structure for Kinde with roles
 type KindeClaims struct {
 	Email string `json:"email"`
 	Sub   string `json:"sub"`
+	Roles []Role `json:"roles,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -96,11 +104,47 @@ func Auth() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Add email to request context for use in the handler
+			// Check if user is admin
+			isAdmin := isUserAdmin(claims.Roles)
+
+			// Add email and admin status to request context
 			ctx := context.WithValue(r.Context(), "email", claims.Email)
+			ctx = context.WithValue(ctx, "isAdmin", isAdmin)
+			ctx = context.WithValue(ctx, "roles", claims.Roles)
+			
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// AdminOnly middleware that checks if user has admin role
+func AdminOnly() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check if user is admin
+			isAdmin, ok := r.Context().Value("isAdmin").(bool)
+			if !ok || !isAdmin {
+				utils.SendErrorResponse(w, apperrors.NewAppError(
+					apperrors.ErrForbidden,
+					http.StatusForbidden,
+					"admin access required",
+				))
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// isUserAdmin checks if user has admin role
+func isUserAdmin(roles []Role) bool {
+	for _, role := range roles {
+		if role.Key == "admin" {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyKindeToken verifies the Kinde JWT token using RS256
@@ -226,4 +270,16 @@ func jwkToRSAPublicKey(jwk JWK) (*rsa.PublicKey, error) {
 func GetEmailFromContext(ctx context.Context) (string, bool) {
 	email, ok := ctx.Value("email").(string)
 	return email, ok
+}
+
+// Helper function to check if user is admin from context
+func IsAdminFromContext(ctx context.Context) bool {
+	isAdmin, ok := ctx.Value("isAdmin").(bool)
+	return ok && isAdmin
+}
+
+// Helper function to get roles from context
+func GetRolesFromContext(ctx context.Context) ([]Role, bool) {
+	roles, ok := ctx.Value("roles").([]Role)
+	return roles, ok
 }

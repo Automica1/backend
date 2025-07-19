@@ -44,17 +44,19 @@ func main() {
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(db.GetCollection("users"))
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
+	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 
 	// Initialize services
 	userService := services.NewUserService(userRepo, creditsRepo)
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
+	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
 	
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
 	qrExtractionAPIService := services.NewQRExtractionAPIService()
 	idCroppingAPIService := services.NewIDCroppingAPIService()
 	signatureAPIService := services.NewSignatureVerificationAPIService()
-	faceDetectionAPIService := services.NewFaceDetectionAPIService() // Add face detection API service
+	faceDetectionAPIService := services.NewFaceDetectionAPIService()
 	faceVerificationAPIService := services.NewFaceVerificationAPIService()
 	
 	log.Println("🔧 Using real API services")
@@ -65,6 +67,9 @@ func main() {
 	}
 	if creditsService == nil {
 		log.Fatal("❌ creditsService is nil")
+	}
+	if tokenService == nil {
+		log.Fatal("❌ tokenService is nil")
 	}
 	if faceDetectionAPIService == nil {
 		log.Fatal("❌ faceDetectionAPIService is nil")
@@ -77,18 +82,22 @@ func main() {
 		Health:                handlers.NewHealthHandler(),
 		User:                  handlers.NewUserHandler(userService),
 		Credits:               handlers.NewCreditsHandler(creditsService, userService),
+		Token:                 handlers.NewTokenHandler(tokenService, creditsService, userService),
 		QRMasking:             handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService),
 		QRExtraction:          handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService),
 		IDCropping:            handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService),
 		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService),
 		FaceDetect:            handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService), 
-		FaceVerify:          handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService), // Add face verification handler
-		// Add face detection handler
+		FaceVerify:            handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService),
+		Debug:                 handlers.NewDebugHandler(), // Add debug handler
 	}
 
 	// Verify handlers are initialized
 	if handlers.FaceDetect == nil {
 		log.Fatal("❌ FaceDetect handler is nil")
+	}
+	if handlers.Token == nil {
+		log.Fatal("❌ Token handler is nil")
 	}
 
 	log.Println("✅ All handlers initialized successfully")
@@ -111,15 +120,20 @@ func main() {
 		log.Println("📋 Available endpoints:")
 		log.Println("  GET  / - Health check")
 		log.Println("  GET  /health - Health check")
+		log.Println("  GET  /debug/token - Debug token data (NO AUTH REQUIRED)")
 		log.Println("  POST /api/v1/register - Register new user")
 		log.Println("  POST /api/v1/credits/deduct - Deduct credits from user")
 		log.Println("  POST /api/v1/credits/add - Add credits to user")
 		log.Println("  GET  /api/v1/credits/balance - Get user's credit balance (requires Bearer token)")
+		log.Println("  POST /api/v1/tokens/generate - Generate credit tokens (requires Bearer token)")
+		log.Println("  POST /api/v1/tokens/redeem - Redeem credit tokens (requires Bearer token)")
+		log.Println("  GET  /api/v1/tokens/my-tokens - Get user's generated tokens (requires Bearer token)")
 		log.Println("  POST /api/v1/qr-masking - Process QR masking (requires Bearer token)")
 		log.Println("  POST /api/v1/qr-extraction - Process QR extraction (requires Bearer token)")
 		log.Println("  POST /api/v1/id-cropping - Process ID cropping (requires Bearer token)")
 		log.Println("  POST /api/v1/signature-verification - Process signature verification (requires Bearer token)")
 		log.Println("  POST /api/v1/face-detect - Process face detection (requires Bearer token)")
+		log.Println("  POST /api/v1/face-verification - Process face verification (requires Bearer token)")
 		log.Println("✅ CORS enabled for all origins")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
