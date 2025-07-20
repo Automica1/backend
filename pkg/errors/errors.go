@@ -1,4 +1,4 @@
-// pkg/errors/errors.go
+// pkg/errors/errors.go - Updated AppError struct
 package apperrors
 
 import (
@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Error types
+// Error types (unchanged)
 const (
 	ErrValidation          = "VALIDATION_ERROR"
 	ErrNotFound            = "NOT_FOUND"
@@ -24,14 +24,15 @@ const (
 
 // AppError represents a custom application error with user-friendly messaging
 type AppError struct {
-	Type             string `json:"type"`
-	StatusCode       int    `json:"status_code"`
-	Message          string `json:"message"`
-	Details          string `json:"details,omitempty"`
-	UserMessage      string `json:"user_message,omitempty"`
-	TechnicalMessage string `json:"technical_message,omitempty"`
-	Suggestion       string `json:"suggestion,omitempty"`
-	ErrorCode        string `json:"error_code,omitempty"`
+	Type             string      `json:"type"`
+	StatusCode       int         `json:"status_code"`
+	Message          string      `json:"message"`
+	Details          string      `json:"details,omitempty"`
+	UserMessage      string      `json:"user_message,omitempty"`
+	TechnicalMessage string      `json:"technical_message,omitempty"`
+	Suggestion       string      `json:"suggestion,omitempty"`
+	ErrorCode        string      `json:"error_code,omitempty"`
+	OriginalResponse interface{} `json:"original_response,omitempty"` // NEW: Store original backend response
 }
 
 // Error implements the error interface
@@ -55,6 +56,28 @@ func NewAppError(errorType string, statusCode int, message string, details ...st
 		Message:    message,
 		Details:    detail,
 	}
+}
+
+// NewAppErrorWithOriginalResponse creates a new AppError with original response
+func NewAppErrorWithOriginalResponse(errorType string, statusCode int, message string, originalResponse interface{}, details ...string) *AppError {
+	var detail string
+	if len(details) > 0 {
+		detail = details[0]
+	}
+	
+	return &AppError{
+		Type:             errorType,
+		StatusCode:       statusCode,
+		Message:          message,
+		Details:          detail,
+		OriginalResponse: originalResponse,
+	}
+}
+
+// WithOriginalResponse adds original response to existing AppError
+func (e *AppError) WithOriginalResponse(originalResponse interface{}) *AppError {
+	e.OriginalResponse = originalResponse
+	return e
 }
 
 // IsErrorType checks if an error is of a specific type
@@ -123,7 +146,7 @@ type APIErrorMapper struct {
 	errorMappings map[string]UserFriendlyError
 }
 
-// NewAPIErrorMapper creates a new error mapper with predefined mappings
+// pkg/errors/errors.go - Updated error mappings section only
 func NewAPIErrorMapper() *APIErrorMapper {
 	return &APIErrorMapper{
 		errorMappings: map[string]UserFriendlyError{
@@ -172,8 +195,32 @@ func NewAPIErrorMapper() *APIErrorMapper {
 				Suggestion:       "Please upload an image where your face takes up more of the frame",
 				ErrorCode:        "FACE_DET_003",
 			},
+			"face could not be detected": {
+				UserMessage:      "No face found in the image",
+				TechnicalMessage: "Face could not be detected in numpy array",
+				Suggestion:       "Please confirm that the picture is a face photo and try again with a clearer image",
+				ErrorCode:        "FACE_DET_004",
+			},
+			"image processing failed": {
+				UserMessage:      "Unable to process the image",
+				TechnicalMessage: "Image processing failed",
+				Suggestion:       "Please upload a valid image file (JPG, PNG, etc.) and ensure it's not corrupted",
+				ErrorCode:        "FACE_DET_005",
+			},
+			"cannot identify image file": {
+				UserMessage:      "Invalid or corrupted image file",
+				TechnicalMessage: "Cannot identify image file",
+				Suggestion:       "Please upload a valid image file (JPG, PNG, etc.) and ensure it's not corrupted",
+				ErrorCode:        "FACE_DET_006",
+			},
+			"invalid base64 encoding": {
+				UserMessage:      "Invalid image data",
+				TechnicalMessage: "Invalid base64 encoding",
+				Suggestion:       "Please ensure the image is properly encoded and try again",
+				ErrorCode:        "FACE_DET_007",
+			},
 			
-			// QR Code specific errors
+			// QR Code specific errors - Enhanced with more specific mappings
 			"qr code not found": {
 				UserMessage:      "QR code not detected",
 				TechnicalMessage: "QR code not found",
@@ -185,6 +232,48 @@ func NewAPIErrorMapper() *APIErrorMapper {
 				TechnicalMessage: "QR code damaged",
 				Suggestion:       "Please upload an image with a clear, undamaged QR code",
 				ErrorCode:        "QR_002",
+			},
+			"no qr code detected": {
+				UserMessage:      "QR code not detected",
+				TechnicalMessage: "No QR code detected",
+				Suggestion:       "Please ensure the QR code is clearly visible in the image",
+				ErrorCode:        "QR_003",
+			},
+			"qr code unreadable": {
+				UserMessage:      "QR code cannot be read",
+				TechnicalMessage: "QR code unreadable",
+				Suggestion:       "Please upload a clearer image with better lighting and ensure the QR code is not damaged",
+				ErrorCode:        "QR_004",
+			},
+			"uploaded base64 is not a valid image": {
+				UserMessage:      "Invalid image data",
+				TechnicalMessage: "Uploaded base64 is not a valid image",
+				Suggestion:       "Please upload a valid image file (JPG, PNG, etc.) and ensure it's properly encoded",
+				ErrorCode:        "QR_005",
+			},
+			"image format not supported": {
+				UserMessage:      "Unsupported image format",
+				TechnicalMessage: "Image format not supported",
+				Suggestion:       "Please upload a valid image file in JPG, PNG, or similar format",
+				ErrorCode:        "QR_006",
+			},
+			"qr extraction failed": {
+				UserMessage:      "QR code extraction failed",
+				TechnicalMessage: "QR extraction failed",
+				Suggestion:       "Please ensure the image contains a clear QR code and try again",
+				ErrorCode:        "QR_007",
+			},
+			"image too small": {
+				UserMessage:      "Image resolution is too low",
+				TechnicalMessage: "Image too small",
+				Suggestion:       "Please upload a higher resolution image of the QR code",
+				ErrorCode:        "QR_008",
+			},
+			"image too large": {
+				UserMessage:      "Image file is too large",
+				TechnicalMessage: "Image too large",
+				Suggestion:       "Please upload a smaller image file (under 10MB)",
+				ErrorCode:        "QR_009",
 			},
 			
 			// Signature Verification specific errors
@@ -219,6 +308,18 @@ func NewAPIErrorMapper() *APIErrorMapper {
 				TechnicalMessage: "Server error",
 				Suggestion:       "Please try again later",
 				ErrorCode:        "GEN_003",
+			},
+			"internal server error": {
+				UserMessage:      "Service temporarily unavailable",
+				TechnicalMessage: "Internal server error",
+				Suggestion:       "Please try again later or contact support if the issue persists",
+				ErrorCode:        "GEN_004",
+			},
+			"api returned status": {
+				UserMessage:      "Service temporarily unavailable",
+				TechnicalMessage: "External API error",
+				Suggestion:       "Please try again later",
+				ErrorCode:        "GEN_005",
 			},
 		},
 	}
@@ -268,5 +369,22 @@ func NewAPIError(mapper *APIErrorMapper, technicalError string) *AppError {
 		TechnicalMessage: userError.TechnicalMessage,
 		Suggestion:       userError.Suggestion,
 		ErrorCode:        userError.ErrorCode,
+	}
+}
+
+// NewAPIErrorWithOriginalResponse creates a new AppError with user-friendly messaging and original response
+func NewAPIErrorWithOriginalResponse(mapper *APIErrorMapper, technicalError string, originalResponse interface{}) *AppError {
+	userError := mapper.MapError(technicalError)
+	
+	return &AppError{
+		Type:             ErrBadRequest,
+		StatusCode:       400,
+		Message:          userError.UserMessage,
+		Details:          userError.TechnicalMessage,
+		UserMessage:      userError.UserMessage,
+		TechnicalMessage: userError.TechnicalMessage,
+		Suggestion:       userError.Suggestion,
+		ErrorCode:        userError.ErrorCode,
+		OriginalResponse: originalResponse,
 	}
 }

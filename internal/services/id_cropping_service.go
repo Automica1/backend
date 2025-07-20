@@ -54,9 +54,9 @@ func (s *idCroppingAPIService) ProcessIDCropping(ctx context.Context, req *model
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	// Log the request for debugging
+	// Log the request for debugging (without full base64 data)
 	log.Printf("Making ID Cropping API request to: %s", s.apiURL)
-	log.Printf("Request payload: %s", string(jsonData))
+	log.Printf("Request ReqID: %s, DocBase64 length: %d", req.ReqID, len(req.DocBase64))
 
 	// Make the API call
 	resp, err := s.httpClient.Do(httpReq)
@@ -109,6 +109,29 @@ func (s *idCroppingAPIService) ProcessIDCropping(ctx context.Context, req *model
 		} else {
 			result.Message = "ID cropping failed with unknown error"
 		}
+		
+		// IMPORTANT: Store the original response exactly as received from the backend
+		// This ensures consistency with what the handler expects
+		originalResponse := make(map[string]interface{})
+		originalResponse["req_id"] = apiResponse.ReqID
+		originalResponse["success"] = apiResponse.Success
+		
+		// Handle error_message - ensure it's included even if nil
+		if apiResponse.ErrorMessage != nil {
+			originalResponse["error_message"] = *apiResponse.ErrorMessage
+		} else {
+			originalResponse["error_message"] = nil
+		}
+		
+		// Handle result - ensure it's included even if nil, matching backend format
+		if apiResponse.Result != nil {
+			originalResponse["result"] = *apiResponse.Result
+		} else {
+			// Backend returns empty string for failed requests, not nil
+			originalResponse["result"] = ""
+		}
+		
+		result.OriginalResponse = originalResponse
 	}
 
 	log.Printf("ID Cropping API result: Success=%t, Status=%s, Message=%s", result.Success, result.Status, result.Message)

@@ -40,7 +40,7 @@ func SetupRoutes(h *Handlers) *chi.Mux {
 	r.Get("/health", h.Health.HealthCheck)
 
 	// Debug route (NO AUTH - for easy testing)
-	// r.Get("/debug/token", h.Debug.ShowTokenData)
+	r.Get("/debug/token", h.Debug.ShowTokenData)
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {

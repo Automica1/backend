@@ -125,8 +125,33 @@ func (h *IDCroppingHandler) ProcessIDCropping(w http.ResponseWriter, r *http.Req
 
 	// Check if the API returned success
 	if cropResult == nil || !cropResult.Success {
-		// Use the error mapper to convert technical error to user-friendly message
-		apiError := apperrors.NewAPIError(h.errorMapper, cropResult.Message)
+		// Use the original response that was set in the service if available
+		var originalResponse interface{}
+		if cropResult != nil && cropResult.OriginalResponse != nil {
+			originalResponse = cropResult.OriginalResponse
+		} else {
+			// Fallback: construct from available data
+			originalResponse = map[string]interface{}{
+				"req_id":  cropResult.ReqID,
+				"success": cropResult.Success,
+			}
+			
+			// Add error_message if available
+			if cropResult.Message != "" {
+				originalResponse.(map[string]interface{})["error_message"] = cropResult.Message
+			}
+			
+			// Add result field if it exists (even for failed requests)
+			if cropResult.Result != nil {
+				originalResponse.(map[string]interface{})["result"] = *cropResult.Result
+			} else {
+				// Add empty result field to match backend response format
+				originalResponse.(map[string]interface{})["result"] = ""
+			}
+		}
+		
+		// Use the error mapper to convert technical error to user-friendly message with original response
+		apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, cropResult.Message, originalResponse)
 		utils.SendErrorResponse(w, apiError)
 		return
 	}

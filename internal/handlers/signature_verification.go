@@ -125,8 +125,16 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	// Check if the API returned success
 	if verificationResult == nil || !verificationResult.Success {
-		// Use the error mapper to convert technical error to user-friendly message
-		apiError := apperrors.NewAPIError(h.errorMapper, verificationResult.Message)
+		// Create original response structure to match the API response format
+		originalResponse := map[string]interface{}{
+			"req_id":        verificationResult.ReqID,
+			"success":       verificationResult.Success,
+			"error_message": verificationResult.Message,
+			"data":          map[string]interface{}{}, // Empty data object for failed requests
+		}
+		
+		// Use the error mapper to convert technical error to user-friendly message with original response
+		apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, verificationResult.Message, originalResponse)
 		utils.SendErrorResponse(w, apiError)
 		return
 	}

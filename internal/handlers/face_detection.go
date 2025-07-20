@@ -126,7 +126,20 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 	// Check if the API returned success
 	if faceResult == nil || !faceResult.Success {
 		// Use the error mapper to convert technical error to user-friendly message
-		apiError := apperrors.NewAPIError(h.errorMapper, faceResult.Message)
+		// Create original response object for the error
+		originalResponse := map[string]interface{}{
+			"req_id":        faceResult.ReqID,
+			"success":       faceResult.Success,
+			"error_message": faceResult.Message,
+			"data":          faceResult.Data,
+		}
+		
+		// Use the error mapper with original response
+		apiError := apperrors.NewAPIErrorWithOriginalResponse(
+			h.errorMapper, 
+			faceResult.Message, 
+			originalResponse,
+		)
 		utils.SendErrorResponse(w, apiError)
 		return
 	}

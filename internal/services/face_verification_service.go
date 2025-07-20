@@ -13,6 +13,7 @@ import (
 	"log"
 
 	"chi-mongo-backend/internal/models"
+	apperrors "chi-mongo-backend/pkg/errors"
 )
 
 type FaceVerificationAPIService interface {
@@ -20,8 +21,9 @@ type FaceVerificationAPIService interface {
 }
 
 type faceVerificationAPIService struct {
-	httpClient *http.Client
-	apiURL     string
+	httpClient  *http.Client
+	apiURL      string
+	errorMapper *apperrors.APIErrorMapper
 }
 
 func NewFaceVerificationAPIService() FaceVerificationAPIService {
@@ -29,7 +31,8 @@ func NewFaceVerificationAPIService() FaceVerificationAPIService {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		apiURL: getFaceVerificationAPIURL(),
+		apiURL:      getFaceVerificationAPIURL(),
+		errorMapper: apperrors.NewAPIErrorMapper(),
 	}
 }
 
@@ -77,9 +80,10 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 	log.Printf("Face Verification API response status: %d", resp.StatusCode)
 	log.Printf("Face Verification API response body: %s", string(body))
 
-	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("face verification API returned non-OK status %d: %s", resp.StatusCode, string(body))
+	// Parse the raw response to preserve original structure
+	var rawResponse map[string]interface{}
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse raw response: %w", err)
 	}
 
 	// Parse the response - exact format from API specification
@@ -94,7 +98,23 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 	}
 
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse API response: %w", err)
+		return nil, apperrors.NewAppErrorWithOriginalResponse(
+			apperrors.ErrInternalServer,
+			http.StatusInternalServerError,
+			"Failed to parse API response",
+			rawResponse,
+			err.Error(),
+		)
+	}
+
+	// Check for HTTP errors first
+	if resp.StatusCode != http.StatusOK {
+		errorMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, apperrors.NewAPIErrorWithOriginalResponse(
+			s.errorMapper,
+			errorMsg,
+			rawResponse,
+		)
 	}
 
 	// Create result based on API response
@@ -121,6 +141,13 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 		} else {
 			result.Message = "Face verification failed with unknown error"
 		}
+		
+		// Return an error with original response for failed API calls
+		return result, apperrors.NewAPIErrorWithOriginalResponse(
+			s.errorMapper,
+			result.Message,
+			rawResponse,
+		)
 	}
 
 	log.Printf("Face Verification API result: Success=%t, Status=%s, Message=%s", result.Success, result.Status, result.Message)

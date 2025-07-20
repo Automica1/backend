@@ -75,21 +75,58 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 	log.Printf("QR Extraction API response status: %d", resp.StatusCode)
 	log.Printf("QR Extraction API response body: %s", string(body))
 
-	// Check for HTTP errors
+	// Handle non-OK HTTP status codes
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("QR extraction API returned non-OK status %d: %s", resp.StatusCode, string(body))
+		// Try to parse error response for better error handling
+		var errorResponse map[string]interface{}
+		if parseErr := json.Unmarshal(body, &errorResponse); parseErr == nil {
+			// Return structured error result
+			result := &models.QRExtractionResult{
+				ReqID:   req.ReqID,
+				Success: false,
+				Status:  "failed",
+				Message: fmt.Sprintf("API returned status %d", resp.StatusCode),
+			}
+			
+			// Extract error message if available
+			if errorMsg, exists := errorResponse["error_message"]; exists {
+				if errorStr, ok := errorMsg.(string); ok {
+					result.Message = errorStr
+				}
+			} else if message, exists := errorResponse["message"]; exists {
+				if messageStr, ok := message.(string); ok {
+					result.Message = messageStr
+				}
+			}
+			
+			return result, nil
+		}
+		
+		// Fallback for unparseable error responses
+		return &models.QRExtractionResult{
+			ReqID:   req.ReqID,
+			Success: false,
+			Status:  "failed",
+			Message: fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(body)),
+		}, nil
 	}
 
-	// Parse the response - exact format from API specification
+	// Parse the successful response - exact format from API specification
 	var apiResponse struct {
 		ReqID        string  `json:"req_id"`
 		Success      bool    `json:"success"`
 		ErrorMessage *string `json:"error_message"`
 		Result       *string `json:"result"`
+		Data         interface{} `json:"data,omitempty"` // Additional data field
 	}
 
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse API response: %w", err)
+		return &models.QRExtractionResult{
+			ReqID:   req.ReqID,
+			Success: false,
+			Status:  "failed",
+			Message: fmt.Sprintf("failed to parse API response: %v", err),
+		}, nil
 	}
 
 	// Create result based on API response
@@ -104,7 +141,7 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 		result.Message = "QR extraction completed successfully"
 	} else {
 		result.Status = "failed"
-		if apiResponse.ErrorMessage != nil {
+		if apiResponse.ErrorMessage != nil && *apiResponse.ErrorMessage != "" {
 			result.Message = *apiResponse.ErrorMessage
 		} else {
 			result.Message = "QR extraction failed with unknown error"

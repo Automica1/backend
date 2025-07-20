@@ -125,8 +125,28 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 
 	// Check if the API returned success
 	if qrResult == nil || !qrResult.Success {
-		// Use the error mapper to convert technical error to user-friendly message
-		apiError := apperrors.NewAPIError(h.errorMapper, qrResult.Message)
+		// Create original response structure to include in error
+		originalResponse := map[string]interface{}{
+			"req_id":  req.ReqID,
+			"success": false,
+			"data":    map[string]interface{}{},
+		}
+		
+		// Add error message if available
+		if qrResult != nil && qrResult.Message != "" {
+			originalResponse["error_message"] = qrResult.Message
+		} else {
+			originalResponse["error_message"] = "QR extraction failed with unknown error"
+		}
+		
+		// Use the error message from the API result for mapping
+		errorMessage := "processing failed" // default
+		if qrResult != nil && qrResult.Message != "" {
+			errorMessage = qrResult.Message
+		}
+		
+		// Use the error mapper to convert technical error to user-friendly message with original response
+		apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, errorMessage, originalResponse)
 		utils.SendErrorResponse(w, apiError)
 		return
 	}

@@ -20,6 +20,7 @@ type IDCroppingResult struct {
 	Status  string  `json:"status"`
 	Result  *string `json:"result,omitempty"`
 	Message string  `json:"message,omitempty"`
+	OriginalResponse map[string]interface{} `json:"original_response,omitempty"` // Store original API response for error cases
 }
 
 // ID Cropping response structure (returned to client)

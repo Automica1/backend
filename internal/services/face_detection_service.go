@@ -75,11 +75,6 @@ func (s *faceDetectionAPIService) ProcessFaceDetection(ctx context.Context, req 
 	log.Printf("Face Detection API response status: %d", resp.StatusCode)
 	log.Printf("Face Detection API response body: %s", string(body))
 
-	// Check for HTTP errors
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("face detection API returned non-OK status %d: %s", resp.StatusCode, string(body))
-	}
-
 	// Parse the response - exact format from API specification
 	var apiResponse struct {
 		ReqID        string    `json:"req_id"`
@@ -89,18 +84,25 @@ func (s *faceDetectionAPIService) ProcessFaceDetection(ctx context.Context, req 
 	}
 
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse API response: %w", err)
+		// If we can't parse the response, create a generic error result
+		return &models.FaceDetectionResult{
+			ReqID:   req.ReqID,
+			Success: false,
+			Status:  "failed",
+			Message: "Failed to parse API response",
+			Data:    []string{},
+		}, nil
 	}
 
-	// Create result based on API response
+	// Create result based on API response - ALWAYS return a result, never an error for API failures
 	result := &models.FaceDetectionResult{
 		ReqID:   apiResponse.ReqID,
 		Success: apiResponse.Success,
+		Data:    apiResponse.Data,
 	}
 
 	if apiResponse.Success {
 		result.Status = "completed"
-		result.Data = apiResponse.Data
 		if len(apiResponse.Data) == 0 {
 			result.Message = "Face detection completed but no faces found"
 		} else {
@@ -115,6 +117,8 @@ func (s *faceDetectionAPIService) ProcessFaceDetection(ctx context.Context, req 
 		}
 	}
 
+	// Don't check HTTP status code here - let the handler deal with success/failure logic
+	// The API might return 400 with a structured error response, which is still valid
 	log.Printf("Face Detection API result: Success=%t, Status=%s, Message=%s, Faces=%d", 
 		result.Success, result.Status, result.Message, len(result.Data))
 

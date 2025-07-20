@@ -113,6 +113,16 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 	// Process face verification via external API
 	faceResult, err := h.faceAPIService.ProcessFaceVerification(ctx, &req)
 	if err != nil {
+		fmt.Printf("Face Verification API Error: %+v\n", err) // Debug log
+		
+		// Check if it's an AppError with original response
+		if appErr, ok := err.(*apperrors.AppError); ok {
+			// The service already processed the error and included original response
+			utils.SendErrorResponse(w, appErr)
+			return
+		}
+		
+		// Fallback for other types of errors
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrInternalServer,
 			http.StatusInternalServerError,
@@ -122,14 +132,6 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 	}
 
 	fmt.Printf("Face Verification API Result: %+v\n", faceResult) // Debug log
-
-	// Check if the API returned success
-	if faceResult == nil || !faceResult.Success {
-		// Use the error mapper to convert technical error to user-friendly message
-		apiError := apperrors.NewAPIError(h.errorMapper, faceResult.Message)
-		utils.SendErrorResponse(w, apiError)
-		return
-	}
 
 	// API success: true - deduct 2 credits from user
 	deductReq := &models.DeductCreditsRequest{
