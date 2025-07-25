@@ -76,13 +76,12 @@ func (s *creditsService) AddCredits(ctx context.Context, req *models.AddCreditsR
 	}, nil
 }
 
+// internal/services/credits_service.go
 func (s *creditsService) DeductCredits(ctx context.Context, req *models.DeductCreditsRequest) (*models.CreditsResponse, error) {
 	// Validate request
 	if err := req.Validate(); err != nil {
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "validation failed", err.Error())
 	}
-
-	const deductAmount = 2
 
 	// Get current credits to return updated balance
 	currentCredits, err := s.creditsRepo.GetByUserID(ctx, req.UserID)
@@ -90,14 +89,14 @@ func (s *creditsService) DeductCredits(ctx context.Context, req *models.DeductCr
 		return nil, err
 	}
 
-	// Deduct credits (this will check for sufficient balance)
-	if err := s.creditsRepo.DeductCredits(ctx, req.UserID, deductAmount); err != nil {
+	// Deduct credits using the amount from request
+	if err := s.creditsRepo.DeductCredits(ctx, req.UserID, req.Amount); err != nil {
 		return nil, err
 	}
 
 	return &models.CreditsResponse{
 		Message: "Credits deducted successfully",
 		UserID:  req.UserID,
-		Credits: currentCredits.Credits - deductAmount,
+		Credits: currentCredits.Credits - req.Amount,
 	}, nil
 }

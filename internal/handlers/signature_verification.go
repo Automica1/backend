@@ -142,6 +142,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	// API success: true - deduct 2 credits from user
 	deductReq := &models.DeductCreditsRequest{
 		UserID: user.UserID,
+		Amount: 1,
 	}
 	
 	updatedBalance, err := h.creditsService.DeductCredits(ctx, deductReq)

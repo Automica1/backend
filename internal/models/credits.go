@@ -20,6 +20,7 @@ type AddCreditsRequest struct {
 
 type DeductCreditsRequest struct {
 	UserID string `json:"userId" validate:"required"`
+	Amount int    `json:"amount" validate:"required,min=1"` // Added amount field
 }
 
 func (r *AddCreditsRequest) Validate() error {
@@ -35,6 +36,9 @@ func (r *AddCreditsRequest) Validate() error {
 func (r *DeductCreditsRequest) Validate() error {
 	if r.UserID == "" {
 		return errors.New("userId is required")
+	}
+	if r.Amount <= 0 {
+		return errors.New("amount must be positive")
 	}
 	return nil
 }

@@ -147,6 +147,7 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 	// API success: true - deduct 2 credits from user
 	deductReq := &models.DeductCreditsRequest{
 		UserID: user.UserID,
+		Amount: 2,
 	}
 	
 	updatedBalance, err := h.creditsService.DeductCredits(ctx, deductReq)

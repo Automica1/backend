@@ -136,6 +136,7 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 	// API success: true - deduct 2 credits from user
 	deductReq := &models.DeductCreditsRequest{
 		UserID: user.UserID,
+		Amount: 2,
 	}
 	
 	updatedBalance, err := h.creditsService.DeductCredits(ctx, deductReq)
