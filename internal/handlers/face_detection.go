@@ -100,8 +100,8 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Check if user has sufficient credits (at least 2)
-	if balance.Credits < 2 {
+	// Check if user has sufficient credits (at least 1)
+	if balance.Credits < 1 {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrInsufficientCredits,
 			http.StatusBadRequest,
@@ -144,10 +144,10 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// API success: true - deduct 2 credits from user
+	// API success: true - deduct 1 credits from user
 	deductReq := &models.DeductCreditsRequest{
 		UserID: user.UserID,
-		Amount: 2,
+		Amount: 1,
 	}
 	
 	updatedBalance, err := h.creditsService.DeductCredits(ctx, deductReq)

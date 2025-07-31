@@ -45,11 +45,13 @@ func main() {
 	userRepo := repository.NewUserRepository(db.GetCollection("users"))
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
+	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys")) // Add API key repository
 
 	// Initialize services
 	userService := services.NewUserService(userRepo, creditsRepo)
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
+	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo) // Add API key service
 	
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
@@ -71,6 +73,9 @@ func main() {
 	if tokenService == nil {
 		log.Fatal("❌ tokenService is nil")
 	}
+	if apiKeyService == nil {
+		log.Fatal("❌ apiKeyService is nil")
+	}
 	if faceDetectionAPIService == nil {
 		log.Fatal("❌ faceDetectionAPIService is nil")
 	}
@@ -83,6 +88,7 @@ func main() {
 		User:                  handlers.NewUserHandler(userService),
 		Credits:               handlers.NewCreditsHandler(creditsService, userService),
 		Token:                 handlers.NewTokenHandler(tokenService, creditsService, userService),
+		APIKey:                handlers.NewAPIKeyHandler(apiKeyService, userService), // Add API key handler
 		QRMasking:             handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService),
 		QRExtraction:          handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService),
 		IDCropping:            handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService),
@@ -99,11 +105,17 @@ func main() {
 	if handlers.Token == nil {
 		log.Fatal("❌ Token handler is nil")
 	}
+	if handlers.APIKey == nil {
+		log.Fatal("❌ APIKey handler is nil")
+	}
 
 	log.Println("✅ All handlers initialized successfully")
 
+	services := &routes.Services{
+        APIKeyService: apiKeyService,
+    }
 	// Setup routes
-	router := routes.SetupRoutes(handlers)
+	router := routes.SetupRoutes(handlers, services)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -128,12 +140,20 @@ func main() {
 		log.Println("  POST /api/v1/tokens/generate - Generate credit tokens (requires Bearer token)")
 		log.Println("  POST /api/v1/tokens/redeem - Redeem credit tokens (requires Bearer token)")
 		log.Println("  GET  /api/v1/tokens/my-tokens - Get user's generated tokens (requires Bearer token)")
-		log.Println("  POST /api/v1/qr-masking - Process QR masking (requires Bearer token)")
-		log.Println("  POST /api/v1/qr-extraction - Process QR extraction (requires Bearer token)")
-		log.Println("  POST /api/v1/id-cropping - Process ID cropping (requires Bearer token)")
-		log.Println("  POST /api/v1/signature-verification - Process signature verification (requires Bearer token)")
-		log.Println("  POST /api/v1/face-detect - Process face detection (requires Bearer token)")
-		log.Println("  POST /api/v1/face-verification - Process face verification (requires Bearer token)")
+		
+		// API Key endpoints
+		log.Println("  POST /api/v1/api-keys - Create new API key (requires Bearer token)")
+		log.Println("  GET  /api/v1/api-keys - List user's API keys (requires Bearer token)")
+		log.Println("  PUT  /api/v1/api-keys/{keyId} - Update API key (requires Bearer token)")
+		log.Println("  DELETE /api/v1/api-keys/{keyId} - Revoke API key (requires Bearer token)")
+		log.Println("  GET  /api/v1/api-keys/stats - Get API key statistics (requires Bearer token)")
+		
+		log.Println("  POST /api/v1/qr-masking - Process QR masking (requires Bearer token or API key)")
+		log.Println("  POST /api/v1/qr-extraction - Process QR extraction (requires Bearer token or API key)")
+		log.Println("  POST /api/v1/id-cropping - Process ID cropping (requires Bearer token or API key)")
+		log.Println("  POST /api/v1/signature-verification - Process signature verification (requires Bearer token or API key)")
+		log.Println("  POST /api/v1/face-detect - Process face detection (requires Bearer token or API key)")
+		log.Println("  POST /api/v1/face-verification - Process face verification (requires Bearer token or API key)")
 		log.Println("✅ CORS enabled for all origins")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

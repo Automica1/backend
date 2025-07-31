@@ -6,6 +6,7 @@ import (
 
 	"chi-mongo-backend/internal/handlers"
 	"chi-mongo-backend/internal/middleware"
+	"chi-mongo-backend/internal/services"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -21,10 +22,16 @@ type Handlers struct {
 	FaceDetect            *handlers.FaceDetectionHandler
 	FaceVerify            *handlers.FaceVerificationHandler
 	Debug                 *handlers.DebugHandler
-	Token                 *handlers.TokenHandler 
+	Token                 *handlers.TokenHandler
+	APIKey                *handlers.APIKeyHandler
 }
 
-func SetupRoutes(h *Handlers) *chi.Mux {
+// Services struct to hold required services for middleware
+type Services struct {
+	APIKeyService services.APIKeyService
+}
+
+func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Global middleware
@@ -49,7 +56,7 @@ func SetupRoutes(h *Handlers) *chi.Mux {
 			r.Post("/register", h.User.RegisterUser)
 		})
 
-		// Protected routes (authentication required)
+		// Protected routes (JWT authentication required)
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Auth())
 			
@@ -91,8 +98,42 @@ func SetupRoutes(h *Handlers) *chi.Mux {
 					r.Delete("/{tokenId}", h.Token.DeleteToken)
 				})
 			})
+
+			// API Key management routes (JWT auth required)
+			// Updated for single API key per user system
+			r.Route("/api-keys", func(r chi.Router) {
+				// Create new API key (replaces any existing key)
+				r.Post("/", h.APIKey.CreateAPIKey)
+				
+				// Get user's API key (single key)
+				r.Get("/", h.APIKey.GetAPIKey)
+				
+				// Backward compatibility: List API keys (returns single key in array format)
+				// Deprecated: Use GET /api-keys instead
+				r.Get("/list", h.APIKey.GetAPIKeys)
+				
+				// Update user's API key (no keyId needed since user has only one key)
+				r.Put("/", h.APIKey.UpdateAPIKey)
+				
+				// Revoke user's API key (no keyId needed since user has only one key)
+				r.Delete("/", h.APIKey.RevokeAPIKey)
+				
+				// Get API key statistics
+				r.Get("/stats", h.APIKey.GetAPIKeyStats)
+			})
+
+			// API key validation endpoint (for debugging/external use)
+			r.Route("/validate", func(r chi.Router) {
+				// Validate API key format and status
+				r.Post("/api-key", h.APIKey.ValidateAPIKey)
+			})
+		})
+
+		// Routes that support both JWT and API Key authentication
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.AuthOrAPIKey(s.APIKeyService)) // Pass the API key service
 			
-			// Other protected routes
+			// API processing routes - accessible with either JWT or API key
 			r.Post("/qr-masking", h.QRMasking.ProcessQRMasking)
 			r.Post("/qr-extraction", h.QRExtraction.ProcessQRExtraction)
 			r.Post("/id-cropping", h.IDCropping.ProcessIDCropping)
@@ -100,6 +141,18 @@ func SetupRoutes(h *Handlers) *chi.Mux {
 			r.Post("/face-detect", h.FaceDetect.ProcessFaceDetection)
 			r.Post("/face-verification", h.FaceVerify.ProcessFaceVerification)
 		})
+
+		// Optional: API-only routes (only accessible with API keys, not JWT)
+		// Uncomment if you want some endpoints to be API-key only
+		/*
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.APIKeyAuth(s.APIKeyService))
+			
+			// Example API-only endpoints
+			// r.Post("/webhook", h.SomeHandler.HandleWebhook)
+			// r.Post("/integration", h.SomeHandler.HandleIntegration)
+		})
+		*/
 	})
 
 	return r
