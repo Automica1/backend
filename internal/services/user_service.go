@@ -14,17 +14,25 @@ type UserService interface {
 	RegisterUser(ctx context.Context, req *models.RegisterUserRequest) (*models.RegisterUserResponse, error)
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
 	GetOrCreateUser(ctx context.Context, email string) (*models.User, error)
+	// Add these new admin methods
+	GetAllUsers(ctx context.Context) (*models.AdminUserListResponse, error)
+	GetUserByID(ctx context.Context, userID string) (*models.AdminUserDetailResponse, error)
+	GetUserStats(ctx context.Context) (*models.UserStatsResponse, error)
+	GetUserActivity(ctx context.Context, userID string) (*models.UserActivityResponse, error)
+	GetUserCredits(ctx context.Context, userID string) (*models.UserCreditsResponse, error)
 }
 
 type userService struct {
-	userRepo    repository.UserRepository
-	creditsRepo repository.CreditsRepository
+	userRepo     repository.UserRepository
+	creditsRepo  repository.CreditsRepository
+	activityRepo repository.ActivityRepository // Add this
 }
 
-func NewUserService(userRepo repository.UserRepository, creditsRepo repository.CreditsRepository) UserService {
+func NewUserService(userRepo repository.UserRepository, creditsRepo repository.CreditsRepository, activityRepo repository.ActivityRepository) UserService {
 	return &userService{
-		userRepo:    userRepo,
-		creditsRepo: creditsRepo,
+		userRepo:     userRepo,
+		creditsRepo:  creditsRepo,
+		activityRepo: activityRepo,
 	}
 }
 
@@ -127,4 +135,113 @@ func (s *userService) GetOrCreateUser(ctx context.Context, email string) (*model
 	}
 
 	return newUser, nil
+}
+
+// Add these method implementations to userService:
+
+func (s *userService) GetAllUsers(ctx context.Context) (*models.AdminUserListResponse, error) {
+	// Get users with their credits using aggregation
+	adminUsers, err := s.creditsRepo.GetAllWithUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.AdminUserListResponse{
+		Message: "Users retrieved successfully",
+		Users:   adminUsers,
+		Total:   len(adminUsers),
+	}, nil
+}
+
+func (s *userService) GetUserByID(ctx context.Context, userID string) (*models.AdminUserDetailResponse, error) {
+	// Get user details
+	user, err := s.userRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get user's credits
+	credits, err := s.creditsRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	adminUser := models.AdminUser{
+		ID:      user.ID,
+		UserID:  user.UserID,
+		Email:   user.Email,
+		Credits: credits.Credits,
+	}
+
+	return &models.AdminUserDetailResponse{
+		Message: "User details retrieved successfully",
+		User:    adminUser,
+	}, nil
+}
+
+func (s *userService) GetUserStats(ctx context.Context) (*models.UserStatsResponse, error) {
+	// Get total users count
+	totalUsers, err := s.userRepo.GetTotalCount(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get total credits
+	totalCredits, err := s.creditsRepo.GetTotalCredits(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate average credits
+	var avgCredits float64
+	if totalUsers > 0 {
+		avgCredits = float64(totalCredits) / float64(totalUsers)
+	}
+
+	return &models.UserStatsResponse{
+		Message:      "User statistics retrieved successfully",
+		TotalUsers:   totalUsers,
+		TotalCredits: totalCredits,
+		AvgCredits:   avgCredits,
+	}, nil
+}
+
+func (s *userService) GetUserActivity(ctx context.Context, userID string) (*models.UserActivityResponse, error) {
+	// First verify user exists
+	_, err := s.userRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get user activities
+	activities, err := s.activityRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.UserActivityResponse{
+		Message:    "User activity retrieved successfully",
+		UserID:     userID,
+		Activities: activities,
+	}, nil
+}
+
+func (s *userService) GetUserCredits(ctx context.Context, userID string) (*models.UserCreditsResponse, error) {
+	// First verify user exists
+	_, err := s.userRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get user's credits
+	credits, err := s.creditsRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.UserCreditsResponse{
+		Message: "User credits retrieved successfully",
+		UserID:  userID,
+		Credits: credits.Credits,
+	}, nil
 }

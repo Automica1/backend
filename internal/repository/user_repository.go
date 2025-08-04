@@ -13,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+// Remove the UserRepository interface from here - it's defined in interfaces.go
+
 type userRepository struct {
 	collection *mongo.Collection
 }
@@ -63,4 +65,22 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*models.
 func (r *userRepository) Delete(ctx context.Context, userID string) error {
 	_, err := r.collection.DeleteOne(ctx, bson.M{"userId": userID})
 	return err
+}
+
+// Admin methods
+func (r *userRepository) GetAll(ctx context.Context) ([]models.User, error) {
+	cursor, err := r.collection.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var users []models.User
+	if err = cursor.All(ctx, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func (r *userRepository) GetTotalCount(ctx context.Context) (int64, error) {
+	return r.collection.CountDocuments(ctx, bson.M{})
 }

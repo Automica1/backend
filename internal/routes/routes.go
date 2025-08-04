@@ -127,6 +127,29 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				// Validate API key format and status
 				r.Post("/api-key", h.APIKey.ValidateAPIKey)
 			})
+
+			// Admin-only user management routes
+			r.Route("/admin", func(r chi.Router) {
+				r.Use(middleware.AdminOnly())
+				
+				// User management endpoints
+				r.Route("/users", func(r chi.Router) {
+					// GET all users - list all users in the system
+					r.Get("/", h.User.GetAllUsers)
+					
+					// GET specific user - get user details by ID
+					r.Get("/{userId}", h.User.GetUserByID)
+					
+					// GET user stats - get aggregated user statistics
+					r.Get("/stats", h.User.GetUserStats)
+					
+					// GET user's activity log - get activity history for a specific user
+					r.Get("/{userId}/activity", h.User.GetUserActivity)
+					
+					// GET user's credits - get credit balance for a specific user
+					r.Get("/{userId}/credits", h.User.GetUserCredits)
+				})
+			})
 		})
 
 		// Routes that support both JWT and API Key authentication

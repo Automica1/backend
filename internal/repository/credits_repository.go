@@ -70,3 +70,72 @@ func (r *creditsRepository) DeductCredits(ctx context.Context, userID string, am
 	
 	return r.UpdateCredits(ctx, userID, -amount)
 }
+
+func (r *creditsRepository) GetTotalCredits(ctx context.Context) (int64, error) {
+	pipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":   nil,
+				"total": bson.M{"$sum": "$credits"},
+			},
+		},
+	}
+	
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, err
+	}
+	defer cursor.Close(ctx)
+	
+	var result struct {
+		Total int64 `bson:"total"`
+	}
+	
+	if cursor.Next(ctx) {
+		if err := cursor.Decode(&result); err != nil {
+			return 0, err
+		}
+		return result.Total, nil
+	}
+	
+	return 0, nil // No credits found
+}
+
+func (r *creditsRepository) GetAllWithUsers(ctx context.Context) ([]models.AdminUser, error) {
+	pipeline := []bson.M{
+		{
+			"$lookup": bson.M{
+				"from":         "users", // Assuming your users collection is named "users"
+				"localField":   "userId",
+				"foreignField": "userId", 
+				"as":           "userInfo",
+			},
+		},
+		{
+			"$unwind": "$userInfo",
+		},
+		{
+			"$project": bson.M{
+				"_id":       "$userInfo._id",
+				"userId":    "$userId",
+				"email":     "$userInfo.email",
+				"credits":   "$credits",
+				"createdAt": "$userInfo.createdAt",
+				"updatedAt": "$userInfo.updatedAt",
+			},
+		},
+	}
+	
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var adminUsers []models.AdminUser
+	if err = cursor.All(ctx, &adminUsers); err != nil {
+		return nil, err
+	}
+	
+	return adminUsers, nil
+}

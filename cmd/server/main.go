@@ -46,9 +46,10 @@ func main() {
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys")) // Add API key repository
+	activityRepo := repository.NewActivityRepository(db.GetCollection("activities")) // Add this new collection
 
 	// Initialize services
-	userService := services.NewUserService(userRepo, creditsRepo)
+	userService := services.NewUserService(userRepo, creditsRepo, activityRepo) // Updated constructor call
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo) // Add API key service
