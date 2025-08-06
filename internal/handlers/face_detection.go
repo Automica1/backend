@@ -9,6 +9,7 @@ import (
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
+	"chi-mongo-backend/internal/middleware"
 	apperrors "chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
 )
@@ -40,6 +41,9 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 		))
 		return
 	}
+
+	// Check if request is authenticated via API key
+	_, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context())
 
 	// Parse request body
 	var req models.FaceDetectionRequest
@@ -105,7 +109,7 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrInsufficientCredits,
 			http.StatusBadRequest,
-			"insufficient credits for face detection operation (minimum 2 credits required)",
+			"insufficient credits for face detection operation (minimum 1 credit required)",
 		))
 		return
 	}
@@ -144,7 +148,7 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// API success: true - deduct 1 credits from user
+	// API success: true - deduct 1 credit from user
 	deductReq := &models.DeductCreditsRequest{
 		UserID: user.UserID,
 		Amount: 1,
@@ -162,14 +166,19 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Prepare successful response with face detection results
-	response := &models.FaceDetectionResponse{
-		Message:          "Face detection completed successfully",
-		UserID:           user.UserID,
-		RemainingCredits: updatedBalance.Credits,
-		FaceResult:       faceResult,
-		ProcessedAt:      time.Now(),
+	// Send different responses based on authentication method
+	if isAPIKeyAuth {
+		// For API key authentication: return only faceResult
+		utils.SendJSONResponse(w, http.StatusOK, faceResult)
+	} else {
+		// For Bearer token (frontend): return full response with credits info
+		response := &models.FaceDetectionResponse{
+			Message:          "Face detection completed successfully",
+			UserID:           user.UserID,
+			RemainingCredits: updatedBalance.Credits,
+			FaceResult:       faceResult,
+			ProcessedAt:      time.Now(),
+		}
+		utils.SendJSONResponse(w, http.StatusOK, response)
 	}
-
-	utils.SendJSONResponse(w, http.StatusOK, response)
 }

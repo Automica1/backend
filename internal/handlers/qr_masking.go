@@ -9,6 +9,7 @@ import (
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
+	"chi-mongo-backend/internal/middleware"
 	apperrors "chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
 )
@@ -40,6 +41,9 @@ func (h *QRMaskingHandler) ProcessQRMasking(w http.ResponseWriter, r *http.Reque
 		))
 		return
 	}
+
+	// Check if request is authenticated via API key
+	_, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context())
 
 	// Parse request body
 	var req models.QRMaskingRequest
@@ -149,14 +153,19 @@ func (h *QRMaskingHandler) ProcessQRMasking(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Prepare successful response with masked base64
-	response := &models.QRMaskingResponse{
-		Message:          "QR masking completed successfully",
-		UserID:           user.UserID,
-		RemainingCredits: updatedBalance.Credits,
-		QRResult:         qrResult,
-		ProcessedAt:      time.Now(),
+	// Send different responses based on authentication method
+	if isAPIKeyAuth {
+		// For API key authentication: return only qrResult
+		utils.SendJSONResponse(w, http.StatusOK, qrResult)
+	} else {
+		// For Bearer token (frontend): return full response with credits info
+		response := &models.QRMaskingResponse{
+			Message:          "QR masking completed successfully",
+			UserID:           user.UserID,
+			RemainingCredits: updatedBalance.Credits,
+			QRResult:         qrResult,
+			ProcessedAt:      time.Now(),
+		}
+		utils.SendJSONResponse(w, http.StatusOK, response)
 	}
-
-	utils.SendJSONResponse(w, http.StatusOK, response)
 }

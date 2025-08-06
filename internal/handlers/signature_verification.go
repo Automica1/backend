@@ -9,6 +9,7 @@ import (
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
+	"chi-mongo-backend/internal/middleware"
 	apperrors "chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
 )
@@ -40,6 +41,9 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		))
 		return
 	}
+
+	// Check if request is authenticated via API key
+	_, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context())
 
 	// Parse request body
 	var req models.SignatureVerificationRequest
@@ -157,14 +161,19 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		return
 	}
 
-	// Prepare successful response with verification result
-	response := &models.SignatureVerificationResponse{
-		Message:            "Signature verification completed successfully",
-		UserID:             user.UserID,
-		RemainingCredits:   updatedBalance.Credits,
-		VerificationResult: verificationResult,
-		ProcessedAt:        time.Now(),
+	// Send different responses based on authentication method
+	if isAPIKeyAuth {
+		// For API key authentication: return only verification_result
+		utils.SendJSONResponse(w, http.StatusOK, verificationResult)
+	} else {
+		// For Bearer token (frontend): return full response with credits info
+		response := &models.SignatureVerificationResponse{
+			Message:            "Signature verification completed successfully",
+			UserID:             user.UserID,
+			RemainingCredits:   updatedBalance.Credits,
+			VerificationResult: verificationResult,
+			ProcessedAt:        time.Now(),
+		}
+		utils.SendJSONResponse(w, http.StatusOK, response)
 	}
-
-	utils.SendJSONResponse(w, http.StatusOK, response)
 }

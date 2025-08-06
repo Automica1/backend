@@ -9,6 +9,7 @@ import (
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
+	"chi-mongo-backend/internal/middleware"
 	apperrors "chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
 )
@@ -40,6 +41,9 @@ func (h *IDCroppingHandler) ProcessIDCropping(w http.ResponseWriter, r *http.Req
 		))
 		return
 	}
+
+	// Check if request is authenticated via API key
+	_, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context())
 
 	// Parse request body
 	var req models.IDCroppingRequest
@@ -174,14 +178,19 @@ func (h *IDCroppingHandler) ProcessIDCropping(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Prepare successful response with cropping result
-	response := &models.IDCroppingResponse{
-		Message:          "ID cropping completed successfully",
-		UserID:           user.UserID,
-		RemainingCredits: updatedBalance.Credits,
-		CropResult:       cropResult,
-		ProcessedAt:      time.Now(),
+	// Send different responses based on authentication method
+	if isAPIKeyAuth {
+		// For API key authentication: return only cropResult
+		utils.SendJSONResponse(w, http.StatusOK, cropResult)
+	} else {
+		// For Bearer token (frontend): return full response with credits info
+		response := &models.IDCroppingResponse{
+			Message:          "ID cropping completed successfully",
+			UserID:           user.UserID,
+			RemainingCredits: updatedBalance.Credits,
+			CropResult:       cropResult,
+			ProcessedAt:      time.Now(),
+		}
+		utils.SendJSONResponse(w, http.StatusOK, response)
 	}
-
-	utils.SendJSONResponse(w, http.StatusOK, response)
 }
