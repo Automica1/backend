@@ -129,22 +129,33 @@ func (h *FaceDetectionHandler) ProcessFaceDetection(w http.ResponseWriter, r *ht
 
 	// Check if the API returned success
 	if faceResult == nil || !faceResult.Success {
-		// Use the error mapper to convert technical error to user-friendly message
-		// Create original response object for the error
-		originalResponse := map[string]interface{}{
-			"req_id":        faceResult.ReqID,
-			"success":       faceResult.Success,
-			"error_message": faceResult.Message,
-			"data":          faceResult.Data,
+		// Create original response structure with specific field order
+		originalResponse := struct {
+			ReqID        string      `json:"req_id"`
+			Success      bool        `json:"success"`
+			ErrorMessage string      `json:"error_message"`
+			Data         interface{} `json:"data"`
+		}{
+			ReqID:        faceResult.ReqID,
+			Success:      faceResult.Success,
+			ErrorMessage: faceResult.Message,
+			Data:         faceResult.Data,
 		}
 		
-		// Use the error mapper with original response
-		apiError := apperrors.NewAPIErrorWithOriginalResponse(
-			h.errorMapper, 
-			faceResult.Message, 
-			originalResponse,
-		)
-		utils.SendErrorResponse(w, apiError)
+		// Ensure data is empty array if nil
+		if originalResponse.Data == nil {
+			originalResponse.Data = []interface{}{}
+		}
+		
+		// Handle error response based on authentication method
+		if isAPIKeyAuth {
+			// For API key authentication: return only original_response structure
+			utils.SendJSONResponse(w, http.StatusBadRequest, originalResponse)
+		} else {
+			// For Bearer token (frontend): return full error with user-friendly message
+			apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, faceResult.Message, originalResponse)
+			utils.SendErrorResponse(w, apiError)
+		}
 		return
 	}
 

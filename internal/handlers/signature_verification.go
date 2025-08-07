@@ -129,17 +129,28 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	// Check if the API returned success
 	if verificationResult == nil || !verificationResult.Success {
-		// Create original response structure to match the API response format
-		originalResponse := map[string]interface{}{
-			"req_id":        verificationResult.ReqID,
-			"success":       verificationResult.Success,
-			"error_message": verificationResult.Message,
-			"data":          map[string]interface{}{}, // Empty data object for failed requests
+		// Create original response structure with specific field order
+		originalResponse := struct {
+			ReqID        string                 `json:"req_id"`
+			Success      bool                   `json:"success"`
+			ErrorMessage string                 `json:"error_message"`
+			Data         map[string]interface{} `json:"data"`
+		}{
+			ReqID:        verificationResult.ReqID,
+			Success:      verificationResult.Success,
+			ErrorMessage: verificationResult.Message,
+			Data:         map[string]interface{}{}, // Empty data object for failed requests
 		}
 		
-		// Use the error mapper to convert technical error to user-friendly message with original response
-		apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, verificationResult.Message, originalResponse)
-		utils.SendErrorResponse(w, apiError)
+		// Handle error response based on authentication method
+		if isAPIKeyAuth {
+			// For API key authentication: return only original_response
+			utils.SendJSONResponse(w, http.StatusBadRequest, originalResponse)
+		} else {
+			// For Bearer token (frontend): return full error with user-friendly message
+			apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, verificationResult.Message, originalResponse)
+			utils.SendErrorResponse(w, apiError)
+		}
 		return
 	}
 

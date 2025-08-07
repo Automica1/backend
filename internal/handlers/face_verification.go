@@ -121,7 +121,27 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 		
 		// Check if it's an AppError with original response
 		if appErr, ok := err.(*apperrors.AppError); ok {
-			// The service already processed the error and included original response
+			// Handle error response based on authentication method
+			if isAPIKeyAuth && appErr.OriginalResponse != nil {
+				// For API key authentication: extract and return only original_response in correct order
+				if originalResp, ok := appErr.OriginalResponse.(map[string]interface{}); ok {
+					// Create ordered response structure
+					orderedResponse := struct {
+						ReqID        interface{} `json:"req_id"`
+						Success      interface{} `json:"success"`
+						ErrorMessage interface{} `json:"error_message"`
+						Data         interface{} `json:"data"`
+					}{
+						ReqID:        originalResp["req_id"],
+						Success:      originalResp["success"],
+						ErrorMessage: originalResp["error_message"],
+						Data:         originalResp["data"],
+					}
+					utils.SendJSONResponse(w, http.StatusBadRequest, orderedResponse)
+					return
+				}
+			}
+			// For Bearer token (frontend): return full error with user-friendly message
 			utils.SendErrorResponse(w, appErr)
 			return
 		}
