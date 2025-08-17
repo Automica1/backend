@@ -4,14 +4,17 @@ package models
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type User struct {
-	ID     primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
-	UserID string             `bson:"userId" json:"userId"`
-	Email  string             `bson:"email" json:"email"`
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	UserID    string             `bson:"userId" json:"userId"`
+	Email     string             `bson:"email" json:"email"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt time.Time          `bson:"updatedAt" json:"updatedAt"`
 }
 
 type RegisterUserRequest struct {

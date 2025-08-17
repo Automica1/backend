@@ -4,6 +4,7 @@ package services
 import (
 	"context"
 	"log"
+	"time"
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/repository"
@@ -56,9 +57,12 @@ func (s *userService) RegisterUser(ctx context.Context, req *models.RegisterUser
 	}
 
 	// User doesn't exist, proceed with creation
+	now := time.Now()
 	user := &models.User{
-		UserID: req.UserID,
-		Email:  req.Email,
+		UserID:    req.UserID,
+		Email:     req.Email,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	if err := s.userRepo.Create(ctx, user); err != nil {
@@ -110,9 +114,12 @@ func (s *userService) GetOrCreateUser(ctx context.Context, email string) (*model
 	// Generate a UserID from email (you might want to use a UUID instead)
 	userID := email // Or use uuid.New().String() for a proper UUID
 
+	now := time.Now()
 	newUser := &models.User{
-		UserID: userID,
-		Email:  email,
+		UserID:    userID,
+		Email:     email,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	if err := s.userRepo.Create(ctx, newUser); err != nil {
@@ -137,7 +144,7 @@ func (s *userService) GetOrCreateUser(ctx context.Context, email string) (*model
 	return newUser, nil
 }
 
-// Add these method implementations to userService:
+// Admin methods
 
 func (s *userService) GetAllUsers(ctx context.Context) (*models.AdminUserListResponse, error) {
 	// Get users with their credits using aggregation
@@ -166,11 +173,14 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*models.A
 		return nil, err
 	}
 
+	// Create admin user response with all user fields including timestamps
 	adminUser := models.AdminUser{
-		ID:      user.ID,
-		UserID:  user.UserID,
-		Email:   user.Email,
-		Credits: credits.Credits,
+		ID:        user.ID,
+		UserID:    user.UserID,
+		Email:     user.Email,
+		Credits:   credits.Credits,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
 	}
 
 	return &models.AdminUserDetailResponse{
