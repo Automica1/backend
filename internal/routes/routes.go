@@ -1,4 +1,4 @@
-// Updated internal/routes/routes.go
+// 8. Updated internal/routes/routes.go with usage endpoints
 package routes
 
 import (
@@ -24,11 +24,13 @@ type Handlers struct {
 	Debug                 *handlers.DebugHandler
 	Token                 *handlers.TokenHandler
 	APIKey                *handlers.APIKeyHandler
+	Usage                 *handlers.UsageHandler // Add usage handler
 }
 
 // Services struct to hold required services for middleware
 type Services struct {
 	APIKeyService services.APIKeyService
+	UsageService  services.UsageService // Add usage service
 }
 
 func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
@@ -100,7 +102,6 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			})
 
 			// API Key management routes (JWT auth required)
-			// Updated for single API key per user system
 			r.Route("/api-keys", func(r chi.Router) {
 				// Create new API key (replaces any existing key)
 				r.Post("/", h.APIKey.CreateAPIKey)
@@ -109,7 +110,6 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Get("/", h.APIKey.GetAPIKey)
 				
 				// Backward compatibility: List API keys (returns single key in array format)
-				// Deprecated: Use GET /api-keys instead
 				r.Get("/list", h.APIKey.GetAPIKeys)
 				
 				// Update user's API key (no keyId needed since user has only one key)
@@ -149,6 +149,29 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					// GET user's credits - get credit balance for a specific user
 					r.Get("/{userId}/credits", h.User.GetUserCredits)
 				})
+
+				// Usage tracking endpoints (Admin only)
+				r.Route("/usage", func(r chi.Router) {
+					// Global service usage statistics
+					// GET /api/v1/admin/usage/global?start_date=2024-01-01&end_date=2024-01-31
+					r.Get("/global", h.Usage.GetGlobalStats)
+					
+					// Per-user usage statistics
+					// GET /api/v1/admin/usage/users?start_date=2024-01-01&end_date=2024-01-31
+					r.Get("/users", h.Usage.GetUserStats)
+					
+					// Service-specific user statistics
+					// GET /api/v1/admin/usage/services?service=signature-verification&start_date=2024-01-01
+					r.Get("/services", h.Usage.GetServiceUserStats)
+					
+					// Individual user's usage history
+					// GET /api/v1/admin/usage/user/{userId}/history?limit=50&skip=0
+					r.Get("/user/{userId}/history", h.Usage.GetUserUsageHistory)
+					
+					// Service-specific usage history
+					// GET /api/v1/admin/usage/service/{serviceName}/history?limit=50&skip=0
+					r.Get("/service/{serviceName}/history", h.Usage.GetServiceUsageHistory)
+				})
 			})
 		})
 
@@ -157,6 +180,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Use(middleware.AuthOrAPIKey(s.APIKeyService)) // Pass the API key service
 			
 			// API processing routes - accessible with either JWT or API key
+			// These routes will automatically track usage via the handlers
 			r.Post("/qr-masking", h.QRMasking.ProcessQRMasking)
 			r.Post("/qr-extraction", h.QRExtraction.ProcessQRExtraction)
 			r.Post("/id-cropping", h.IDCropping.ProcessIDCropping)
