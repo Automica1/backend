@@ -96,14 +96,14 @@ func main() {
 		Token:                 handlers.NewTokenHandler(tokenService, creditsService, userService),
 		APIKey:                handlers.NewAPIKeyHandler(apiKeyService, userService),
 		// These handlers don't have usage tracking yet - using original constructors
-		QRMasking:             handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService),
-		QRExtraction:          handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService),
-		IDCropping:            handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService),
+		QRMasking:             handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
+		QRExtraction:          handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
+		IDCropping:            handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
 		// SignatureVerification has usage tracking implemented
 		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, usageService),
 		// These handlers don't have usage tracking yet - using original constructors
-		FaceDetect:            handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService),
-		FaceVerify:            handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService),
+		FaceDetect:            handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService, usageService),
+		FaceVerify:            handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService, usageService),
 		Debug:                 handlers.NewDebugHandler(),
 		Usage:                 handlers.NewUsageHandler(usageService), // Usage handler for admin endpoints
 	}
