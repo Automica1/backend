@@ -4,12 +4,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"chi-mongo-backend/internal/config"
 	"chi-mongo-backend/internal/database"
@@ -19,42 +21,83 @@ import (
 	"chi-mongo-backend/internal/services"
 )
 
+func initLogger(env string) *zap.Logger {
+	var config zap.Config
+	
+	if env == "production" {
+		config = zap.NewProductionConfig()
+		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	} else {
+		config = zap.NewDevelopmentConfig()
+		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	}
+	
+	// Customize time format
+	config.EncoderConfig.TimeKey = "timestamp"
+	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	
+	logger, err := config.Build()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to initialize logger: %v", err))
+	}
+	
+	return logger
+}
+
 func main() {
+	// Initialize logger first
+	logger := initLogger(os.Getenv("ENV"))
+	defer logger.Sync() // Flush any buffered log entries
+	
+	// Replace global logger
+	zap.ReplaceGlobals(logger)
+
+	logger.Info("Starting chi-mongo-backend server")
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("❌ Failed to load configuration: %v", err)
+		logger.Fatal("Failed to load configuration", zap.Error(err))
 	}
+
+	logger.Info("Configuration loaded successfully",
+		zap.String("host", cfg.Server.Host),
+		zap.String("port", cfg.Server.Port))
 
 	// Initialize database
 	db, err := database.NewMongoDB(cfg)
 	if err != nil {
-		log.Fatalf("❌ Failed to initialize database: %v", err)
+		logger.Fatal("Failed to initialize database", zap.Error(err))
 	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := db.Close(ctx); err != nil {
-			log.Printf("❌ Error closing database connection: %v", err)
+			logger.Error("Error closing database connection", zap.Error(err))
 		}
 	}()
 
-	log.Println("✅ Successfully connected to MongoDB")
+	logger.Info("Successfully connected to MongoDB")
 
 	// Initialize repositories
+	logger.Debug("Initializing repositories")
 	userRepo := repository.NewUserRepository(db.GetCollection("users"))
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys"))
 	activityRepo := repository.NewActivityRepository(db.GetCollection("activities"))
-	usageRepo := repository.NewUsageRepository(db.GetCollection("usage")) // Add usage repository
+	usageRepo := repository.NewUsageRepository(db.GetCollection("usage"))
+
+	logger.Info("All repositories initialized successfully")
 
 	// Initialize services
+	logger.Debug("Initializing services")
 	userService := services.NewUserService(userRepo, creditsRepo, activityRepo)
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
-	usageService := services.NewUsageService(usageRepo) // Add usage service
+	usageService := services.NewUsageService(usageRepo)
 	
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
@@ -64,76 +107,71 @@ func main() {
 	faceDetectionAPIService := services.NewFaceDetectionAPIService()
 	faceVerificationAPIService := services.NewFaceVerificationAPIService()
 	
-	log.Println("🔧 Using real API services")
+	logger.Info("Using real API services")
 
 	// Verify critical services are initialized
-	if userService == nil {
-		log.Fatal("❌ userService is nil")
+	services := []interface{}{
+		userService, creditsService, tokenService, apiKeyService, usageService, faceDetectionAPIService,
 	}
-	if creditsService == nil {
-		log.Fatal("❌ creditsService is nil")
-	}
-	if tokenService == nil {
-		log.Fatal("❌ tokenService is nil")
-	}
-	if apiKeyService == nil {
-		log.Fatal("❌ apiKeyService is nil")
-	}
-	if usageService == nil {
-		log.Fatal("❌ usageService is nil")
-	}
-	if faceDetectionAPIService == nil {
-		log.Fatal("❌ faceDetectionAPIService is nil")
+	serviceNames := []string{
+		"userService", "creditsService", "tokenService", "apiKeyService", "usageService", "faceDetectionAPIService",
 	}
 
-	log.Println("✅ All services initialized successfully")
+	for i, service := range services {
+		if service == nil {
+			logger.Fatal("Service is nil", zap.String("service", serviceNames[i]))
+		}
+	}
 
-	// Initialize handlers (only SignatureVerification has usage tracking implemented)
+	logger.Info("All services initialized successfully")
+
+	// Initialize handlers
+	logger.Debug("Initializing handlers")
 	handlers := &routes.Handlers{
 		Health:                handlers.NewHealthHandler(),
 		User:                  handlers.NewUserHandler(userService),
 		Credits:               handlers.NewCreditsHandler(creditsService, userService),
 		Token:                 handlers.NewTokenHandler(tokenService, creditsService, userService),
 		APIKey:                handlers.NewAPIKeyHandler(apiKeyService, userService),
-		// These handlers don't have usage tracking yet - using original constructors
 		QRMasking:             handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService),
 		QRExtraction:          handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService),
 		IDCropping:            handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService),
-		// SignatureVerification has usage tracking implemented
 		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, usageService),
-		// These handlers don't have usage tracking yet - using original constructors
 		FaceDetect:            handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService),
 		FaceVerify:            handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService),
 		Debug:                 handlers.NewDebugHandler(),
-		Usage:                 handlers.NewUsageHandler(usageService), // Usage handler for admin endpoints
+		Usage:                 handlers.NewUsageHandler(usageService),
 	}
 
 	// Verify handlers are initialized
-	if handlers.FaceDetect == nil {
-		log.Fatal("❌ FaceDetect handler is nil")
+	criticalHandlers := []interface{}{
+		handlers.FaceDetect, handlers.Token, handlers.APIKey, handlers.Usage,
 	}
-	if handlers.Token == nil {
-		log.Fatal("❌ Token handler is nil")
-	}
-	if handlers.APIKey == nil {
-		log.Fatal("❌ APIKey handler is nil")
-	}
-	if handlers.Usage == nil {
-		log.Fatal("❌ Usage handler is nil")
+	handlerNames := []string{
+		"FaceDetect", "Token", "APIKey", "Usage",
 	}
 
-	log.Println("✅ All handlers initialized successfully")
+	for i, handler := range criticalHandlers {
+		if handler == nil {
+			logger.Fatal("Handler is nil", zap.String("handler", handlerNames[i]))
+		}
+	}
 
-	services := &routes.Services{
+	logger.Info("All handlers initialized successfully")
+
+	servicesStruct := &routes.Services{
         APIKeyService: apiKeyService,
-		UsageService:  usageService, // Add usage service to routes
+		UsageService:  usageService,
     }
+	
 	// Setup routes
-	router := routes.SetupRoutes(handlers, services)
+	logger.Debug("Setting up routes")
+	router := routes.SetupRoutes(handlers, servicesStruct)
 
 	// Create HTTP server
+	serverAddr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
 	server := &http.Server{
-		Addr:         fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port),
+		Addr:         serverAddr,
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -142,43 +180,66 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("🚀 Server starting on %s", server.Addr)
-		log.Println("📋 Available endpoints:")
-		log.Println("  GET  / - Health check")
-		log.Println("  GET  /health - Health check")
-		log.Println("  GET  /debug/token - Debug token data (NO AUTH REQUIRED)")
-		log.Println("  POST /api/v1/register - Register new user")
-		log.Println("  POST /api/v1/credits/deduct - Deduct credits from user")
-		log.Println("  POST /api/v1/credits/add - Add credits to user")
-		log.Println("  GET  /api/v1/credits/balance - Get user's credit balance (requires Bearer token)")
-		log.Println("  POST /api/v1/tokens/generate - Generate credit tokens (requires Bearer token)")
-		log.Println("  POST /api/v1/tokens/redeem - Redeem credit tokens (requires Bearer token)")
-		log.Println("  GET  /api/v1/tokens/my-tokens - Get user's generated tokens (requires Bearer token)")
-		
-		// API Key endpoints
-		log.Println("  POST /api/v1/api-keys - Create new API key (requires Bearer token)")
-		log.Println("  GET  /api/v1/api-keys - List user's API keys (requires Bearer token)")
-		log.Println("  PUT  /api/v1/api-keys/{keyId} - Update API key (requires Bearer token)")
-		log.Println("  DELETE /api/v1/api-keys/{keyId} - Revoke API key (requires Bearer token)")
-		log.Println("  GET  /api/v1/api-keys/stats - Get API key statistics (requires Bearer token)")
-		
-		// Usage tracking endpoints (Admin only)
-		log.Println("  GET  /api/v1/admin/usage/global - Get global usage statistics (Admin only)")
-		log.Println("  GET  /api/v1/admin/usage/users - Get per-user usage statistics (Admin only)")
-		log.Println("  GET  /api/v1/admin/usage/services - Get service-user usage statistics (Admin only)")
-		log.Println("  GET  /api/v1/admin/usage/user/{userId}/history - Get user usage history (Admin only)")
-		log.Println("  GET  /api/v1/admin/usage/service/{serviceName}/history - Get service usage history (Admin only)")
-		
-		log.Println("  POST /api/v1/qr-masking - Process QR masking (requires Bearer token or API key) [NO USAGE TRACKING]")
-		log.Println("  POST /api/v1/qr-extraction - Process QR extraction (requires Bearer token or API key) [NO USAGE TRACKING]")
-		log.Println("  POST /api/v1/id-cropping - Process ID cropping (requires Bearer token or API key) [NO USAGE TRACKING]")
-		log.Println("  POST /api/v1/signature-verification - Process signature verification (requires Bearer token or API key) [WITH USAGE TRACKING]")
-		log.Println("  POST /api/v1/face-detect - Process face detection (requires Bearer token or API key) [NO USAGE TRACKING]")
-		log.Println("  POST /api/v1/face-verification - Process face verification (requires Bearer token or API key) [NO USAGE TRACKING]")
-		log.Println("✅ CORS enabled for all origins")
+		logger.Info("Starting HTTP server",
+			zap.String("address", serverAddr),
+			zap.Duration("read_timeout", 30*time.Second),
+			zap.Duration("write_timeout", 30*time.Second),
+			zap.Duration("idle_timeout", 60*time.Second))
+
+		// Log available endpoints
+		endpoints := []struct {
+			method      string
+			path        string
+			description string
+			auth        string
+			tracking    string
+		}{
+			{"GET", "/", "Health check", "None", ""},
+			{"GET", "/health", "Health check", "None", ""},
+			{"GET", "/debug/token", "Debug token data", "None", ""},
+			{"POST", "/api/v1/register", "Register new user", "None", ""},
+			{"POST", "/api/v1/credits/deduct", "Deduct credits from user", "Bearer token", ""},
+			{"POST", "/api/v1/credits/add", "Add credits to user", "Bearer token", ""},
+			{"GET", "/api/v1/credits/balance", "Get user's credit balance", "Bearer token", ""},
+			{"POST", "/api/v1/tokens/generate", "Generate credit tokens", "Bearer token", ""},
+			{"POST", "/api/v1/tokens/redeem", "Redeem credit tokens", "Bearer token", ""},
+			{"GET", "/api/v1/tokens/my-tokens", "Get user's generated tokens", "Bearer token", ""},
+			{"POST", "/api/v1/api-keys", "Create new API key", "Bearer token", ""},
+			{"GET", "/api/v1/api-keys", "List user's API keys", "Bearer token", ""},
+			{"PUT", "/api/v1/api-keys/{keyId}", "Update API key", "Bearer token", ""},
+			{"DELETE", "/api/v1/api-keys/{keyId}", "Revoke API key", "Bearer token", ""},
+			{"GET", "/api/v1/api-keys/stats", "Get API key statistics", "Bearer token", ""},
+			{"GET", "/api/v1/admin/usage/global", "Get global usage statistics", "Admin only", ""},
+			{"GET", "/api/v1/admin/usage/users", "Get per-user usage statistics", "Admin only", ""},
+			{"GET", "/api/v1/admin/usage/services", "Get service-user usage statistics", "Admin only", ""},
+			{"GET", "/api/v1/admin/usage/user/{userId}/history", "Get user usage history", "Admin only", ""},
+			{"GET", "/api/v1/admin/usage/service/{serviceName}/history", "Get service usage history", "Admin only", ""},
+			{"POST", "/api/v1/qr-masking", "Process QR masking", "Bearer token or API key", "NO USAGE TRACKING"},
+			{"POST", "/api/v1/qr-extraction", "Process QR extraction", "Bearer token or API key", "NO USAGE TRACKING"},
+			{"POST", "/api/v1/id-cropping", "Process ID cropping", "Bearer token or API key", "NO USAGE TRACKING"},
+			{"POST", "/api/v1/signature-verification", "Process signature verification", "Bearer token or API key", "WITH USAGE TRACKING"},
+			{"POST", "/api/v1/face-detect", "Process face detection", "Bearer token or API key", "NO USAGE TRACKING"},
+			{"POST", "/api/v1/face-verification", "Process face verification", "Bearer token or API key", "NO USAGE TRACKING"},
+		}
+
+		logger.Info("Available endpoints", zap.Int("count", len(endpoints)))
+		for _, endpoint := range endpoints {
+			fields := []zap.Field{
+				zap.String("method", endpoint.method),
+				zap.String("path", endpoint.path),
+				zap.String("description", endpoint.description),
+				zap.String("auth", endpoint.auth),
+			}
+			if endpoint.tracking != "" {
+				fields = append(fields, zap.String("tracking", endpoint.tracking))
+			}
+			logger.Debug("Endpoint registered", fields...)
+		}
+
+		logger.Info("CORS enabled for all origins")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Server failed to start: %v", err)
+			logger.Fatal("Server failed to start", zap.Error(err))
 		}
 	}()
 
@@ -187,15 +248,15 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("🛑 Server is shutting down...")
+	logger.Info("Received shutdown signal, shutting down server gracefully")
 
 	// Gracefully shutdown the server with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("❌ Server forced to shutdown: %v", err)
+		logger.Fatal("Server forced to shutdown", zap.Error(err))
 	}
 
-	log.Println("✅ Server exited")
+	logger.Info("Server exited gracefully")
 }
