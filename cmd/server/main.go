@@ -47,7 +47,9 @@ func main() {
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys"))
 	activityRepo := repository.NewActivityRepository(db.GetCollection("activities"))
-	usageRepo := repository.NewUsageRepository(db.GetCollection("usage")) // Add usage repository
+	usageRepo := repository.NewUsageRepository(db.GetCollection("usage"))              // Add usage repository
+	subRepo := repository.NewSubscriptionRepository(db.GetCollection("subscriptions")) // Add subscription repository
+	planRepo := repository.NewPlanRepository(db.GetCollection("plans"))                // Add plan repository
 
 	// Initialize services
 	userService := services.NewUserService(userRepo, creditsRepo, activityRepo)
@@ -55,7 +57,10 @@ func main() {
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
 	usageService := services.NewUsageService(usageRepo) // Add usage service
-	
+	planService := services.NewPlanService(planRepo)    // Add plan service
+	emailService := services.NewEmailService(cfg.Email.FromEmail, cfg.Email.FromName, cfg.Email.Password)
+	subService := services.NewSubscriptionService(subRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
 	qrExtractionAPIService := services.NewQRExtractionAPIService()
@@ -63,7 +68,7 @@ func main() {
 	signatureAPIService := services.NewSignatureVerificationAPIService()
 	faceDetectionAPIService := services.NewFaceDetectionAPIService()
 	faceVerificationAPIService := services.NewFaceVerificationAPIService()
-	
+
 	log.Println("🔧 Using real API services")
 
 	// Verify critical services are initialized
@@ -90,22 +95,24 @@ func main() {
 
 	// Initialize handlers (only SignatureVerification has usage tracking implemented)
 	handlers := &routes.Handlers{
-		Health:                handlers.NewHealthHandler(),
-		User:                  handlers.NewUserHandler(userService),
-		Credits:               handlers.NewCreditsHandler(creditsService, userService),
-		Token:                 handlers.NewTokenHandler(tokenService, creditsService, userService),
-		APIKey:                handlers.NewAPIKeyHandler(apiKeyService, userService),
+		Health:  handlers.NewHealthHandler(),
+		User:    handlers.NewUserHandler(userService),
+		Credits: handlers.NewCreditsHandler(creditsService, userService),
+		Token:   handlers.NewTokenHandler(tokenService, creditsService, userService),
+		APIKey:  handlers.NewAPIKeyHandler(apiKeyService, userService),
 		// These handlers don't have usage tracking yet - using original constructors
-		QRMasking:             handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
-		QRExtraction:          handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
-		IDCropping:            handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
+		QRMasking:    handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
+		QRExtraction: handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
+		IDCropping:   handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
 		// SignatureVerification has usage tracking implemented
 		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, usageService),
 		// These handlers don't have usage tracking yet - using original constructors
-		FaceDetect:            handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService, usageService),
-		FaceVerify:            handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService, usageService),
-		Debug:                 handlers.NewDebugHandler(),
-		Usage:                 handlers.NewUsageHandler(usageService), // Usage handler for admin endpoints
+		FaceDetect:   handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService, usageService),
+		FaceVerify:   handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService, usageService),
+		Debug:        handlers.NewDebugHandler(),
+		Usage:        handlers.NewUsageHandler(usageService),      // Usage handler for admin endpoints
+		Subscription: handlers.NewSubscriptionHandler(subService), // Add subscription handler
+		Plan:         handlers.NewPlanHandler(planService),        // Add plan handler
 	}
 
 	// Verify handlers are initialized
@@ -125,9 +132,9 @@ func main() {
 	log.Println("✅ All handlers initialized successfully")
 
 	services := &routes.Services{
-        APIKeyService: apiKeyService,
+		APIKeyService: apiKeyService,
 		UsageService:  usageService, // Add usage service to routes
-    }
+	}
 	// Setup routes
 	router := routes.SetupRoutes(handlers, services)
 
@@ -154,27 +161,33 @@ func main() {
 		log.Println("  POST /api/v1/tokens/generate - Generate credit tokens (requires Bearer token)")
 		log.Println("  POST /api/v1/tokens/redeem - Redeem credit tokens (requires Bearer token)")
 		log.Println("  GET  /api/v1/tokens/my-tokens - Get user's generated tokens (requires Bearer token)")
-		
+
 		// API Key endpoints
 		log.Println("  POST /api/v1/api-keys - Create new API key (requires Bearer token)")
 		log.Println("  GET  /api/v1/api-keys - List user's API keys (requires Bearer token)")
 		log.Println("  PUT  /api/v1/api-keys/{keyId} - Update API key (requires Bearer token)")
 		log.Println("  DELETE /api/v1/api-keys/{keyId} - Revoke API key (requires Bearer token)")
 		log.Println("  GET  /api/v1/api-keys/stats - Get API key statistics (requires Bearer token)")
-		
+
 		// Usage tracking endpoints (Admin only)
 		log.Println("  GET  /api/v1/admin/usage/global - Get global usage statistics (Admin only)")
 		log.Println("  GET  /api/v1/admin/usage/users - Get per-user usage statistics (Admin only)")
 		log.Println("  GET  /api/v1/admin/usage/services - Get service-user usage statistics (Admin only)")
 		log.Println("  GET  /api/v1/admin/usage/user/{userId}/history - Get user usage history (Admin only)")
 		log.Println("  GET  /api/v1/admin/usage/service/{serviceName}/history - Get service usage history (Admin only)")
-		
+
 		log.Println("  POST /api/v1/qr-masking - Process QR masking (requires Bearer token or API key) [NO USAGE TRACKING]")
 		log.Println("  POST /api/v1/qr-extraction - Process QR extraction (requires Bearer token or API key) [NO USAGE TRACKING]")
 		log.Println("  POST /api/v1/id-cropping - Process ID cropping (requires Bearer token or API key) [NO USAGE TRACKING]")
 		log.Println("  POST /api/v1/signature-verification - Process signature verification (requires Bearer token or API key) [WITH USAGE TRACKING]")
 		log.Println("  POST /api/v1/face-detect - Process face detection (requires Bearer token or API key) [NO USAGE TRACKING]")
 		log.Println("  POST /api/v1/face-verification - Process face verification (requires Bearer token or API key) [NO USAGE TRACKING]")
+
+		// Subscription endpoints
+		log.Println("  POST /api/v1/subscription/create-order - Create Razorpay order (requires Bearer token)")
+		log.Println("  POST /api/v1/subscription/verify-payment - Verify Razorpay payment (requires Bearer token)")
+		log.Println("  GET  /api/v1/subscription/status - Get user subscription status (requires Bearer token)")
+		log.Println("  POST /api/v1/subscription/webhook - Razorpay webhook handler (Public)")
 		log.Println("✅ CORS enabled for all origins")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

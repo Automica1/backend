@@ -21,6 +21,7 @@ type CreditsRepository interface {
 	Create(ctx context.Context, credits *models.Credits) error
 	GetByUserID(ctx context.Context, userID string) (*models.Credits, error)
 	UpdateCredits(ctx context.Context, userID string, amount int) error
+	UpsertCredits(ctx context.Context, userID string, amount int) (*models.Credits, error)
 	DeductCredits(ctx context.Context, userID string, amount int) error
 	// Admin methods
 	GetTotalCredits(ctx context.Context) (int64, error)

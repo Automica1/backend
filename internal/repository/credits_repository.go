@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type creditsRepository struct {
@@ -28,7 +29,7 @@ func (r *creditsRepository) Create(ctx context.Context, credits *models.Credits)
 	if err != nil {
 		return err
 	}
-	
+
 	credits.ID = result.InsertedID.(primitive.ObjectID)
 	return nil
 }
@@ -57,17 +58,37 @@ func (r *creditsRepository) UpdateCredits(ctx context.Context, userID string, am
 	return nil
 }
 
+// UpsertCredits atomically creates a credits record if it doesn't exist, or increments
+// the credits field if it does. Returns the new credit balance after the operation.
+func (r *creditsRepository) UpsertCredits(ctx context.Context, userID string, amount int) (*models.Credits, error) {
+	filter := bson.M{"userId": userID}
+	update := bson.M{
+		"$inc":         bson.M{"credits": amount},
+		"$setOnInsert": bson.M{"userId": userID},
+	}
+	opts := options.FindOneAndUpdate().
+		SetUpsert(true).
+		SetReturnDocument(options.After)
+
+	var result models.Credits
+	err := r.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (r *creditsRepository) DeductCredits(ctx context.Context, userID string, amount int) error {
 	// First check if user has enough credits
 	credits, err := r.GetByUserID(ctx, userID)
 	if err != nil {
 		return err
 	}
-	
+
 	if credits.Credits < amount {
 		return apperrors.NewInsufficientCreditsError()
 	}
-	
+
 	return r.UpdateCredits(ctx, userID, -amount)
 }
 
@@ -80,24 +101,24 @@ func (r *creditsRepository) GetTotalCredits(ctx context.Context) (int64, error) 
 			},
 		},
 	}
-	
+
 	cursor, err := r.collection.Aggregate(ctx, pipeline)
 	if err != nil {
 		return 0, err
 	}
 	defer cursor.Close(ctx)
-	
+
 	var result struct {
 		Total int64 `bson:"total"`
 	}
-	
+
 	if cursor.Next(ctx) {
 		if err := cursor.Decode(&result); err != nil {
 			return 0, err
 		}
 		return result.Total, nil
 	}
-	
+
 	return 0, nil // No credits found
 }
 
@@ -107,7 +128,7 @@ func (r *creditsRepository) GetAllWithUsers(ctx context.Context) ([]models.Admin
 			"$lookup": bson.M{
 				"from":         "users", // Assuming your users collection is named "users"
 				"localField":   "userId",
-				"foreignField": "userId", 
+				"foreignField": "userId",
 				"as":           "userInfo",
 			},
 		},
@@ -125,17 +146,17 @@ func (r *creditsRepository) GetAllWithUsers(ctx context.Context) ([]models.Admin
 			},
 		},
 	}
-	
+
 	cursor, err := r.collection.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, err
 	}
 	defer cursor.Close(ctx)
-	
+
 	var adminUsers []models.AdminUser
 	if err = cursor.All(ctx, &adminUsers); err != nil {
 		return nil, err
 	}
-	
+
 	return adminUsers, nil
 }
