@@ -13,6 +13,13 @@ type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	Auth     AuthConfig
+	Razorpay RazorpayConfig
+}
+
+type RazorpayConfig struct {
+	KeyID         string
+	KeySecret     string
+	WebhookSecret string
 }
 
 type ServerConfig struct {
@@ -44,6 +51,11 @@ func Load() (*Config, error) {
 		},
 		Auth: AuthConfig{
 			KindeIssuerURL: os.Getenv("KINDE_ISSUER_URL"),
+		},
+		Razorpay: RazorpayConfig{
+			KeyID:         os.Getenv("RAZORPAY_KEY_ID"),
+			KeySecret:     os.Getenv("RAZORPAY_KEY_SECRET"),
+			WebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
 		},
 	}
 

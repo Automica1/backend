@@ -24,7 +24,9 @@ type Handlers struct {
 	Debug                 *handlers.DebugHandler
 	Token                 *handlers.TokenHandler
 	APIKey                *handlers.APIKeyHandler
-	Usage                 *handlers.UsageHandler // Add usage handler
+	Usage                 *handlers.UsageHandler        // Add usage handler
+	Subscription          *handlers.SubscriptionHandler // Add subscription handler
+	Plan                  *handlers.PlanHandler         // Add plan handler
 }
 
 // Services struct to hold required services for middleware
@@ -56,44 +58,53 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 		// Public routes (no authentication required)
 		r.Group(func(r chi.Router) {
 			r.Post("/register", h.User.RegisterUser)
+			r.Get("/plans", h.Plan.GetActivePlans) // Public plans list
 		})
 
 		// Protected routes (JWT authentication required)
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Auth())
-			
+
 			// Credits routes with different authorization levels
 			r.Route("/credits", func(r chi.Router) {
 				// GET balance - accessible to all authenticated users
 				r.Get("/balance", h.Credits.GetBalance)
-				
+
 				// POST deduct credits - accessible to all authenticated users
 				r.Post("/deduct", h.Credits.DeductCredits)
-				
+
 				// POST add credits - only accessible to admins
 				r.With(middleware.AdminOnly()).Post("/add", h.Credits.AddCredits)
+			})
+
+			// Subscription routes
+			r.Route("/subscription", func(r chi.Router) {
+				r.Post("/create-order", h.Subscription.CreateOrder)
+				r.Post("/verify-payment", h.Subscription.VerifyPayment)
+				r.Get("/status", h.Subscription.GetStatus)
+				r.Post("/cancel", h.Subscription.CancelSubscription)
 			})
 
 			r.Route("/tokens", func(r chi.Router) {
 				// POST generate token - only accessible to admins
 				r.With(middleware.AdminOnly()).Post("/generate", h.Token.GenerateToken)
-				
+
 				// POST redeem token - accessible to all authenticated users
 				r.Post("/redeem", h.Token.RedeemToken)
-				
+
 				// Admin-only token viewing routes
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.AdminOnly())
-					
+
 					// GET my tokens - see tokens created by the current admin
 					r.Get("/my-tokens", h.Token.GetMyTokens)
-					
+
 					// GET all tokens - see all tokens in the system
 					r.Get("/all", h.Token.GetAllTokens)
-					
+
 					// GET used tokens - see all tokens that have been redeemed
 					r.Get("/used", h.Token.GetUsedTokens)
-					
+
 					// GET unused tokens - see all tokens that haven't been redeemed yet
 					r.Get("/unused", h.Token.GetUnusedTokens)
 
@@ -105,19 +116,19 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Route("/api-keys", func(r chi.Router) {
 				// Create new API key (replaces any existing key)
 				r.Post("/", h.APIKey.CreateAPIKey)
-				
+
 				// Get user's API key (single key)
 				r.Get("/", h.APIKey.GetAPIKey)
-				
+
 				// Backward compatibility: List API keys (returns single key in array format)
 				r.Get("/list", h.APIKey.GetAPIKeys)
-				
+
 				// Update user's API key (no keyId needed since user has only one key)
 				r.Put("/", h.APIKey.UpdateAPIKey)
-				
+
 				// Revoke user's API key (no keyId needed since user has only one key)
 				r.Delete("/", h.APIKey.RevokeAPIKey)
-				
+
 				// Get API key statistics
 				r.Get("/stats", h.APIKey.GetAPIKeyStats)
 			})
@@ -131,21 +142,21 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			// Admin-only user management routes
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(middleware.AdminOnly())
-				
+
 				// User management endpoints
 				r.Route("/users", func(r chi.Router) {
 					// GET all users - list all users in the system
 					r.Get("/", h.User.GetAllUsers)
-					
+
 					// GET specific user - get user details by ID
 					r.Get("/{userId}", h.User.GetUserByID)
-					
+
 					// GET user stats - get aggregated user statistics
 					r.Get("/stats", h.User.GetUserStats)
-					
+
 					// GET user's activity log - get activity history for a specific user
 					r.Get("/{userId}/activity", h.User.GetUserActivity)
-					
+
 					// GET user's credits - get credit balance for a specific user
 					r.Get("/{userId}/credits", h.User.GetUserCredits)
 				})
@@ -155,22 +166,40 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					// Global service usage statistics
 					// GET /api/v1/admin/usage/global?start_date=2024-01-01&end_date=2024-01-31
 					r.Get("/global", h.Usage.GetGlobalStats)
-					
+
 					// Per-user usage statistics
 					// GET /api/v1/admin/usage/users?start_date=2024-01-01&end_date=2024-01-31
 					r.Get("/users", h.Usage.GetUserStats)
-					
+
 					// Service-specific user statistics
 					// GET /api/v1/admin/usage/services?service=signature-verification&start_date=2024-01-01
 					r.Get("/services", h.Usage.GetServiceUserStats)
-					
+
 					// Individual user's usage history
 					// GET /api/v1/admin/usage/user/{userId}/history?limit=50&skip=0
 					r.Get("/user/{userId}/history", h.Usage.GetUserUsageHistory)
-					
+
 					// Service-specific usage history
 					// GET /api/v1/admin/usage/service/{serviceName}/history?limit=50&skip=0
 					r.Get("/service/{serviceName}/history", h.Usage.GetServiceUsageHistory)
+				})
+
+				// Subscription management endpoints (Admin only)
+				r.Route("/subscriptions", func(r chi.Router) {
+					r.Get("/", h.Subscription.GetAllSubscriptions)
+					r.Get("/active-count", h.Subscription.GetActiveCount)
+				})
+
+				// Plan management endpoints (Admin only)
+				r.Route("/plans", func(r chi.Router) {
+					// GET all plans (including inactive)
+					r.Get("/", h.Plan.GetAllPlans)
+					// POST create plan
+					r.Post("/", h.Plan.CreatePlan)
+					// PUT update plan
+					r.Put("/{planId}", h.Plan.UpdatePlan)
+					// DELETE deactivate plan
+					r.Delete("/{planId}", h.Plan.DeletePlan)
 				})
 			})
 		})
@@ -178,7 +207,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 		// Routes that support both JWT and API Key authentication
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthOrAPIKey(s.APIKeyService)) // Pass the API key service
-			
+
 			// API processing routes - accessible with either JWT or API key
 			// These routes will automatically track usage via the handlers
 			r.Post("/qr-masking", h.QRMasking.ProcessQRMasking)
@@ -189,16 +218,19 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Post("/face-verification", h.FaceVerify.ProcessFaceVerification)
 		})
 
+		// Public subscription webhook
+		r.Post("/subscription/webhook", h.Subscription.Webhook)
+
 		// Optional: API-only routes (only accessible with API keys, not JWT)
 		// Uncomment if you want some endpoints to be API-key only
 		/*
-		r.Group(func(r chi.Router) {
-			r.Use(middleware.APIKeyAuth(s.APIKeyService))
-			
-			// Example API-only endpoints
-			// r.Post("/webhook", h.SomeHandler.HandleWebhook)
-			// r.Post("/integration", h.SomeHandler.HandleIntegration)
-		})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.APIKeyAuth(s.APIKeyService))
+
+				// Example API-only endpoints
+				// r.Post("/webhook", h.SomeHandler.HandleWebhook)
+				// r.Post("/integration", h.SomeHandler.HandleIntegration)
+			})
 		*/
 	})
 

@@ -58,21 +58,16 @@ func (s *creditsService) AddCredits(ctx context.Context, req *models.AddCreditsR
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "validation failed", err.Error())
 	}
 
-	// Get current credits to return updated balance
-	currentCredits, err := s.creditsRepo.GetByUserID(ctx, req.UserID)
+	// Atomically upsert credits: creates record if missing, increments if exists
+	updatedCredits, err := s.creditsRepo.UpsertCredits(ctx, req.UserID, req.Amount)
 	if err != nil {
-		return nil, err
-	}
-
-	// Add credits
-	if err := s.creditsRepo.UpdateCredits(ctx, req.UserID, req.Amount); err != nil {
 		return nil, err
 	}
 
 	return &models.CreditsResponse{
 		Message: "Credits added successfully",
 		UserID:  req.UserID,
-		Credits: currentCredits.Credits + req.Amount,
+		Credits: updatedCredits.Credits,
 	}, nil
 }
 
