@@ -3,14 +3,14 @@ package handlers
 
 import (
 	"context"
-	"net/http"
-	"time"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
+	"chi-mongo-backend/internal/middleware"
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
-	"chi-mongo-backend/internal/middleware"
 	apperrors "chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
 )
@@ -134,7 +134,7 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 				UserID: email, // Use email as user_id for Kinde users
 				Email:  email,
 			}
-			
+
 			createdUser, createErr := h.userService.RegisterUser(ctx, registerReq)
 			if createErr != nil {
 				// Track user creation failure
@@ -240,7 +240,7 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 	faceResult, err := h.faceAPIService.ProcessFaceVerification(ctx, &req)
 	if err != nil {
 		fmt.Printf("Face Verification API Error: %+v\n", err) // Debug log
-		
+
 		// Check if it's an AppError with original response
 		if appErr, ok := err.(*apperrors.AppError); ok {
 			// Track API failure
@@ -263,17 +263,19 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 			if isAPIKeyAuth && appErr.OriginalResponse != nil {
 				// For API key authentication: extract and return only original_response in correct order
 				if originalResp, ok := appErr.OriginalResponse.(map[string]interface{}); ok {
-					// Create ordered response structure
+					// Create ordered response structure matching new API format
 					orderedResponse := struct {
-						ReqID        interface{} `json:"req_id"`
-						Success      interface{} `json:"success"`
-						ErrorMessage interface{} `json:"error_message"`
-						Data         interface{} `json:"data"`
+						ReqID   interface{} `json:"req_id"`
+						Success interface{} `json:"success"`
+						Status  interface{} `json:"status"`
+						Message interface{} `json:"message"`
+						Data    interface{} `json:"data"`
 					}{
-						ReqID:        originalResp["req_id"],
-						Success:      originalResp["success"],
-						ErrorMessage: originalResp["error_message"],
-						Data:         originalResp["data"],
+						ReqID:   originalResp["req_id"],
+						Success: originalResp["success"],
+						Status:  originalResp["status"],
+						Message: originalResp["message"],
+						Data:    originalResp["data"],
 					}
 					utils.SendJSONResponse(w, http.StatusBadRequest, orderedResponse)
 					return
@@ -283,7 +285,7 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 			utils.SendErrorResponse(w, appErr)
 			return
 		}
-		
+
 		// Track generic API failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 			UserID:      user.UserID,
@@ -316,7 +318,7 @@ func (h *FaceVerificationHandler) ProcessFaceVerification(w http.ResponseWriter,
 		UserID: user.UserID,
 		Amount: 2,
 	}
-	
+
 	updatedBalance, err := h.creditsService.DeductCredits(ctx, deductReq)
 	if err != nil {
 		// Track credit deduction failure
