@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
-	"log"
 
 	"chi-mongo-backend/internal/models"
 	apperrors "chi-mongo-backend/pkg/errors"
@@ -37,12 +37,10 @@ func NewFaceVerificationAPIService() FaceVerificationAPIService {
 }
 
 func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context, req *models.FaceVerificationRequest) (*models.FaceVerificationResult, error) {
-	// Prepare the request payload exactly as expected by the API
+	// Prepare the request payload exactly as expected by the new API
 	payload := map[string]interface{}{
-		"req_id":       req.ReqID,
-		"doc_base64_1": req.DocBase64_1,
-		"doc_base64_2": req.DocBase64_2,
-		"doc_type":     req.DocType,
+		"req_id":     req.ReqID,
+		"doc_base64": req.DocBase64,
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -86,14 +84,15 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 		return nil, fmt.Errorf("failed to parse raw response: %w", err)
 	}
 
-	// Parse the response - exact format from API specification
+	// Parse the response - exact format from new API specification
 	var apiResponse struct {
-		ReqID        string  `json:"req_id"`
-		Success      bool    `json:"success"`
-		ErrorMessage *string `json:"error_message"`
-		Data         *struct {
-			Confidence float64 `json:"confidence"`
-			Verified   bool    `json:"verified"`
+		ReqID   string `json:"req_id"`
+		Success bool   `json:"success"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Data    *struct {
+			SimilarityPercentage float64 `json:"similarity_percentage"`
+			Classification       string  `json:"classification"`
 		} `json:"data"`
 	}
 
@@ -121,28 +120,20 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 	result := &models.FaceVerificationResult{
 		ReqID:   apiResponse.ReqID,
 		Success: apiResponse.Success,
+		Status:  apiResponse.Status,
+		Message: apiResponse.Message,
 	}
 
-	if apiResponse.Success {
-		result.Status = "completed"
-		result.Message = "Face verification completed successfully"
-		
-		// Include verification data if available
-		if apiResponse.Data != nil {
-			result.Data = &models.FaceVerificationData{
-				Confidence: apiResponse.Data.Confidence,
-				Verified:   apiResponse.Data.Verified,
-			}
+	// Include verification data if available
+	if apiResponse.Data != nil {
+		result.Data = &models.FaceVerificationData{
+			SimilarityPercentage: apiResponse.Data.SimilarityPercentage,
+			Classification:       apiResponse.Data.Classification,
 		}
-	} else {
-		result.Status = "failed"
-		if apiResponse.ErrorMessage != nil {
-			result.Message = *apiResponse.ErrorMessage
-		} else {
-			result.Message = "Face verification failed with unknown error"
-		}
-		
-		// Return an error with original response for failed API calls
+	}
+
+	// If API call failed, return error with original response
+	if !apiResponse.Success {
 		return result, apperrors.NewAPIErrorWithOriginalResponse(
 			s.errorMapper,
 			result.Message,
@@ -152,7 +143,7 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 
 	log.Printf("Face Verification API result: Success=%t, Status=%s, Message=%s", result.Success, result.Status, result.Message)
 	if result.Data != nil {
-		log.Printf("Verification Data: Verified=%t, Confidence=%.6f", result.Data.Verified, result.Data.Confidence)
+		log.Printf("Verification Data: SimilarityPercentage=%.6f, Classification=%s", result.Data.SimilarityPercentage, result.Data.Classification)
 	}
 
 	return result, nil
