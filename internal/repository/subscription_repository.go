@@ -16,6 +16,7 @@ import (
 type SubscriptionRepository interface {
 	Create(ctx context.Context, sub *models.Subscription) error
 	GetByUserID(ctx context.Context, userID string) (*models.Subscription, error)
+	GetByUserIDAndStatus(ctx context.Context, userID string, status models.SubscriptionStatus) (*models.Subscription, error)
 	GetBySubscriptionID(ctx context.Context, subID string) (*models.Subscription, error)
 	Update(ctx context.Context, sub *models.Subscription) error
 	UpdateStatus(ctx context.Context, subID string, status models.SubscriptionStatus) error
@@ -48,14 +49,42 @@ func (r *subscriptionRepository) Create(ctx context.Context, sub *models.Subscri
 
 func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string) (*models.Subscription, error) {
 	var sub models.Subscription
-	// Sort by updatedAt descending to get the most recently updated (active) subscription first
+	// Only fetch primary subscription records (active, cancelled, past_due, etc.)
+	// This avoids picking up temporary upgrade or one-time payment records
+	filter := bson.M{
+		"userId": userID,
+		"status": bson.M{"$in": []models.SubscriptionStatus{
+			models.SubscriptionStatusActive,
+			models.SubscriptionStatusCancelled,
+			models.SubscriptionStatusPastDue,
+			models.SubscriptionStatusExpired,
+			models.SubscriptionStatusCreated,
+		}},
+	}
 	opts := options.FindOne().SetSort(bson.D{{Key: "updatedAt", Value: -1}})
-	err := r.collection.FindOne(ctx, bson.M{"userId": userID}, opts).Decode(&sub)
+	err := r.collection.FindOne(ctx, filter, opts).Decode(&sub)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "subscription not found for user", "")
 		}
 		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to get subscription", err.Error())
+	}
+	return &sub, nil
+}
+
+func (r *subscriptionRepository) GetByUserIDAndStatus(ctx context.Context, userID string, status models.SubscriptionStatus) (*models.Subscription, error) {
+	var sub models.Subscription
+	filter := bson.M{
+		"userId": userID,
+		"status": status,
+	}
+	opts := options.FindOne().SetSort(bson.D{{Key: "updatedAt", Value: -1}})
+	err := r.collection.FindOne(ctx, filter, opts).Decode(&sub)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "no subscription with status "+string(status)+" found", "")
+		}
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to get subscription by status", err.Error())
 	}
 	return &sub, nil
 }

@@ -29,6 +29,8 @@ type Subscription struct {
 	CurrentPeriodStart time.Time          `bson:"currentPeriodStart" json:"currentPeriodStart"`
 	CurrentPeriodEnd   time.Time          `bson:"currentPeriodEnd" json:"currentPeriodEnd"`
 	GracePeriodEnd     *time.Time         `bson:"gracePeriodEnd,omitempty" json:"gracePeriodEnd,omitempty"`
+	PendingPlanID      string             `bson:"pendingPlanId,omitempty" json:"pendingPlanId,omitempty"`
+	PlanChangeDate     *time.Time         `bson:"planChangeDate,omitempty" json:"planChangeDate,omitempty"`
 	CreatedAt          time.Time          `bson:"createdAt" json:"createdAt"`
 	UpdatedAt          time.Time          `bson:"updatedAt" json:"updatedAt"`
 }

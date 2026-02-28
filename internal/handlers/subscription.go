@@ -109,6 +109,71 @@ func (h *SubscriptionHandler) CancelSubscription(w http.ResponseWriter, r *http.
 	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"message": "Subscription cancelled successfully"})
 }
 
+func (h *SubscriptionHandler) CalculateUpgradePrice(w http.ResponseWriter, r *http.Request) {
+	email, ok := middleware.GetEmailFromContext(r.Context())
+	if !ok {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrUnauthorized, 401, "email not found", ""))
+		return
+	}
+
+	planID := r.URL.Query().Get("planId")
+	if planID == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, 400, "planId is required", ""))
+		return
+	}
+
+	price, err := h.subService.CalculateUpgradePrice(r.Context(), email, planID)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{"price": price})
+}
+
+func (h *SubscriptionHandler) CreateUpgradeOrder(w http.ResponseWriter, r *http.Request) {
+	email, ok := middleware.GetEmailFromContext(r.Context())
+	if !ok {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrUnauthorized, 401, "email not found", ""))
+		return
+	}
+
+	var req models.CreateSubscriptionRequest
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	response, err := h.subService.CreateUpgradeOrder(r.Context(), email, req.PlanID)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
+func (h *SubscriptionHandler) DowngradeSubscription(w http.ResponseWriter, r *http.Request) {
+	email, ok := middleware.GetEmailFromContext(r.Context())
+	if !ok {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrUnauthorized, 401, "email not found", ""))
+		return
+	}
+
+	var req models.CreateSubscriptionRequest
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	if err := h.subService.DowngradeSubscription(r.Context(), email, req.PlanID); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"message": "Downgrade scheduled for end of cycle"})
+}
+
 func (h *SubscriptionHandler) GetAllSubscriptions(w http.ResponseWriter, r *http.Request) {
 	subs, err := h.subService.GetAllSubscriptions(r.Context())
 	if err != nil {

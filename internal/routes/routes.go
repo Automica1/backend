@@ -82,6 +82,9 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Post("/create-order", h.Subscription.CreateOrder)
 				r.Post("/verify-payment", h.Subscription.VerifyPayment)
 				r.Get("/status", h.Subscription.GetStatus)
+				r.Get("/upgrade/calculate", h.Subscription.CalculateUpgradePrice)
+				r.Post("/upgrade/create", h.Subscription.CreateUpgradeOrder)
+				r.Post("/downgrade", h.Subscription.DowngradeSubscription)
 				r.Post("/cancel", h.Subscription.CancelSubscription)
 			})
 
