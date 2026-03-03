@@ -65,22 +65,31 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, pl
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "plan is not active", "")
 	}
 
+	if plan.RazorpayPlanID == "" {
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "plan is not configured for automated billing (missing Razorpay Plan ID)", "")
+	}
+
 	params := map[string]interface{}{
-		"amount":   plan.Price, // amount in cents
-		"currency": "USD",
-		"receipt":  fmt.Sprintf("receipt_%d", time.Now().Unix()),
+		"plan_id":         plan.RazorpayPlanID,
+		"total_count":     120, // 10 years of monthly cycles
+		"quantity":        1,
+		"customer_notify": 1,
 	}
 
-	body, err := s.client.Order.Create(params, nil)
+	fmt.Printf("[CreateOrder] Creating Razorpay Subscription for plan %s (RazorpayID: %s)\n", planID, plan.RazorpayPlanID)
+
+	body, err := s.client.Subscription.Create(params, nil)
 	if err != nil {
-		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to create razorpay order", err.Error())
+		fmt.Printf("[CreateOrder] Razorpay Error: %v\n", err)
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to create razorpay subscription", err.Error())
 	}
 
-	orderID := body["id"].(string)
+	subID := body["id"].(string)
+	fmt.Printf("[CreateOrder] Created Subscription: %s\n", subID)
 
 	// Store a pending subscription record
 	sub := &models.Subscription{
-		SubscriptionID: orderID,
+		SubscriptionID: subID,
 		UserID:         userID,
 		Email:          email,
 		Status:         models.SubscriptionStatusCreated,
@@ -96,22 +105,34 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, pl
 	}
 
 	return &models.SubscriptionResponse{
-		Message:  "Order created successfully",
-		OrderID:  orderID,
-		Amount:   plan.Price,
-		Currency: "USD",
+		Message:        "Subscription order created successfully",
+		SubscriptionID: subID,
+		Amount:         plan.Price,
+		Currency:       "USD",
 	}, nil
 }
 
 func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, req *models.VerifyPaymentRequest) (*models.SubscriptionResponse, error) {
-	// Verify signature
-	data := req.RazorpayOrderID + "|" + req.RazorpayPaymentID
+	// 1. Verify signature
+	// Subscription verification uses payment_id + "|" + subscription_id
+	// Order verification uses order_id + "|" + payment_id
+	var data string
+	var subID string
+
+	if req.RazorpaySubscriptionID != "" {
+		data = req.RazorpayPaymentID + "|" + req.RazorpaySubscriptionID
+		subID = req.RazorpaySubscriptionID
+	} else {
+		data = req.RazorpayOrderID + "|" + req.RazorpayPaymentID
+		subID = req.RazorpayOrderID
+	}
+
 	if !s.verifySignature(data, req.RazorpaySignature, s.razorpaySecret) {
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid payment signature", "")
 	}
 
-	// 1. Find the subscription record for this payment
-	sub, err := s.subRepo.GetBySubscriptionID(ctx, req.RazorpayOrderID)
+	// 2. Find the subscription record for this payment
+	sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
 	if err != nil {
 		return nil, err
 	}
@@ -397,11 +418,50 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 	// }
 
 	switch payload.Event {
-	case "payment.captured":
-		// Handle payment captured if needed (already handled in VerifyPayment for frontend flow)
+	case "subscription.charged":
+		// This event is triggered when a recurring payment is successfully charged
+		payloadData, ok := payload.Payload["subscription"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		entity, ok := payloadData["entity"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		subID := entity["id"].(string)
+
+		fmt.Printf("[Webhook] Subscription charged: %s\n", subID)
+
+		sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
+		if err != nil {
+			fmt.Printf("[Webhook] Subscription not found in DB: %s\n", subID)
+			return nil // Or handle accordingly
+		}
+
+		plan, err := s.planService.GetPlanByID(ctx, sub.PlanID)
+		if err != nil {
+			return err
+		}
+
+		// Add credits for the new billing cycle
+		fmt.Printf("[Webhook] Adding %d credits for user %s\n", plan.Credits, sub.UserID)
+		creditsReq := &models.AddCreditsRequest{
+			UserID: sub.UserID,
+			Amount: plan.Credits,
+		}
+		_, err = s.creditsService.AddCredits(ctx, creditsReq)
+		return err
 	case "subscription.cancelled":
-		subID := payload.Payload["subscription"].(map[string]interface{})["entity"].(map[string]interface{})["id"].(string)
+		subData := payload.Payload["subscription"].(map[string]interface{})["entity"].(map[string]interface{})
+		subID := subData["id"].(string)
 		return s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusCancelled)
+
+	case "payment.failed":
+		// Handle payment failure (e.g., notify user, mark as past_due)
+		paymentData := payload.Payload["payment"].(map[string]interface{})["entity"].(map[string]interface{})
+		if subID, ok := paymentData["subscription_id"].(string); ok {
+			return s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusPastDue)
+		}
 	}
 
 	return nil

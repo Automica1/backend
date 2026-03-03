@@ -40,9 +40,10 @@ type CreateSubscriptionRequest struct {
 }
 
 type VerifyPaymentRequest struct {
-	RazorpayPaymentID string `json:"razorpay_payment_id" validate:"required"`
-	RazorpayOrderID   string `json:"razorpay_order_id" validate:"required"`
-	RazorpaySignature string `json:"razorpay_signature" validate:"required"`
+	RazorpayPaymentID      string `json:"razorpay_payment_id" validate:"required"`
+	RazorpayOrderID        string `json:"razorpay_order_id,omitempty"`
+	RazorpaySubscriptionID string `json:"razorpay_subscription_id,omitempty"`
+	RazorpaySignature      string `json:"razorpay_signature" validate:"required"`
 }
 
 type SubscriptionResponse struct {
