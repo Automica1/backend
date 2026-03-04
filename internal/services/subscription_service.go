@@ -34,19 +34,21 @@ type subscriptionService struct {
 	creditsService CreditsService
 	userService    UserService
 	planService    PlanService
+	emailService   EmailService
 	razorpayKey    string
 	razorpaySecret string
 	webhookSecret  string
 	client         *razorpay.Client
 }
 
-func NewSubscriptionService(subRepo repository.SubscriptionRepository, creditsService CreditsService, userService UserService, planService PlanService, key, secret, webhookSecret string) SubscriptionService {
+func NewSubscriptionService(subRepo repository.SubscriptionRepository, creditsService CreditsService, userService UserService, planService PlanService, emailService EmailService, key, secret, webhookSecret string) SubscriptionService {
 	client := razorpay.NewClient(key, secret)
 	return &subscriptionService{
 		subRepo:        subRepo,
 		creditsService: creditsService,
 		userService:    userService,
 		planService:    planService,
+		emailService:   emailService,
 		razorpayKey:    key,
 		razorpaySecret: secret,
 		webhookSecret:  webhookSecret,
@@ -232,6 +234,15 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Send confirmation email (fire-and-forget)
+	if plan != nil {
+		nextBilling := sub.CurrentPeriodEnd
+		if nextBilling.IsZero() {
+			nextBilling = time.Now().AddDate(0, 1, 0)
+		}
+		go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, creditsToAdd, nextBilling)
 	}
 
 	return &models.SubscriptionResponse{
@@ -450,17 +461,84 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 			Amount: plan.Credits,
 		}
 		_, err = s.creditsService.AddCredits(ctx, creditsReq)
+		if err != nil {
+			return err
+		}
+
+		// Send confirmation email (fire-and-forget, don't fail on email error)
+		nextBilling := time.Now().AddDate(0, 1, 0)
+		go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, plan.Credits, nextBilling)
+		return nil
+
+	case "subscription.halted":
+		// All Razorpay retries have failed — expire the subscription and clear credits
+		subData, ok := payload.Payload["subscription"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		entity, ok := subData["entity"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		subID := entity["id"].(string)
+		fmt.Printf("[Webhook] Subscription halted (all retries failed): %s\n", subID)
+
+		sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
+		if err != nil {
+			return nil
+		}
+
+		// Mark subscription as expired
+		if err := s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusExpired); err != nil {
+			return err
+		}
+
+		// Clear the user's credits by deducting their full balance
+		fmt.Printf("[Webhook] Clearing credits for user %s after subscription halted\n", sub.UserID)
+		balance, err := s.creditsService.GetBalance(ctx, sub.UserID)
+		if err == nil && balance.Credits > 0 {
+			deductReq := &models.DeductCreditsRequest{
+				UserID: sub.UserID,
+				Amount: balance.Credits,
+			}
+			_, err = s.creditsService.DeductCredits(ctx, deductReq)
+		}
+
+		// Send expired email
+		go s.emailService.SendSubscriptionExpired(sub.Email, sub.Email)
 		return err
+
 	case "subscription.cancelled":
 		subData := payload.Payload["subscription"].(map[string]interface{})["entity"].(map[string]interface{})
 		subID := subData["id"].(string)
-		return s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusCancelled)
+		if err := s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusCancelled); err != nil {
+			return err
+		}
+
+		// Send cancellation email
+		sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
+		if err == nil {
+			accessUntil := time.Now().AddDate(0, 0, 30) // approximate; use sub.CurrentPeriodEnd if stored
+			if !sub.CurrentPeriodEnd.IsZero() {
+				accessUntil = sub.CurrentPeriodEnd
+			}
+			go s.emailService.SendCancellationConfirmation(sub.Email, sub.Email, accessUntil)
+		}
+		return nil
 
 	case "payment.failed":
-		// Handle payment failure (e.g., notify user, mark as past_due)
+		// Mark as past_due and notify user
 		paymentData := payload.Payload["payment"].(map[string]interface{})["entity"].(map[string]interface{})
 		if subID, ok := paymentData["subscription_id"].(string); ok {
-			return s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusPastDue)
+			if err := s.subRepo.UpdateStatus(ctx, subID, models.SubscriptionStatusPastDue); err != nil {
+				return err
+			}
+			// Send payment failed email
+			sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
+			if err == nil {
+				retryIn := time.Now().AddDate(0, 0, 3)
+				go s.emailService.SendPaymentFailed(sub.Email, sub.Email, retryIn)
+			}
 		}
 	}
 

@@ -31,12 +31,13 @@ func NewPlanService(planRepo repository.PlanRepository) PlanService {
 
 func (s *planService) CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error) {
 	plan := &models.Plan{
-		PlanID:      req.PlanID,
-		Name:        req.Name,
-		Description: req.Description,
-		Price:       req.Price,
-		Credits:     req.Credits,
-		IsActive:    req.IsActive,
+		PlanID:         req.PlanID,
+		RazorpayPlanID: req.RazorpayPlanID,
+		Name:           req.Name,
+		Description:    req.Description,
+		Price:          req.Price,
+		Credits:        req.Credits,
+		IsActive:       req.IsActive,
 	}
 
 	err := s.planRepo.Create(ctx, plan)
@@ -75,6 +76,9 @@ func (s *planService) UpdatePlan(ctx context.Context, planID string, req *models
 	}
 	if req.IsActive != nil {
 		updates["isActive"] = *req.IsActive
+	}
+	if req.RazorpayPlanID != nil {
+		updates["razorpayPlanId"] = *req.RazorpayPlanID
 	}
 
 	if len(updates) == 0 {

@@ -58,7 +58,8 @@ func main() {
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
 	usageService := services.NewUsageService(usageRepo) // Add usage service
 	planService := services.NewPlanService(planRepo)    // Add plan service
-	subService := services.NewSubscriptionService(subRepo, creditsService, userService, planService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+	emailService := services.NewEmailService(cfg.Email.FromEmail, cfg.Email.FromName, cfg.Email.Password)
+	subService := services.NewSubscriptionService(subRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
 
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()

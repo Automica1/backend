@@ -14,12 +14,19 @@ type Config struct {
 	Database DatabaseConfig
 	Auth     AuthConfig
 	Razorpay RazorpayConfig
+	Email    EmailConfig
 }
 
 type RazorpayConfig struct {
 	KeyID         string
 	KeySecret     string
 	WebhookSecret string
+}
+
+type EmailConfig struct {
+	FromEmail string
+	FromName  string
+	Password  string
 }
 
 type ServerConfig struct {
@@ -56,6 +63,11 @@ func Load() (*Config, error) {
 			KeyID:         os.Getenv("RAZORPAY_KEY_ID"),
 			KeySecret:     os.Getenv("RAZORPAY_KEY_SECRET"),
 			WebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
+		},
+		Email: EmailConfig{
+			FromEmail: getEnvOrDefault("GMAIL_FROM_EMAIL", "automicaai@gmail.com"),
+			FromName:  getEnvOrDefault("GMAIL_FROM_NAME", "Automica"),
+			Password:  os.Getenv("GMAIL_APP_PASSWORD"),
 		},
 	}
 
