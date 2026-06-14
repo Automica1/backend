@@ -13,6 +13,7 @@ type User struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	UserID    string             `bson:"userId" json:"userId"`
 	Email     string             `bson:"email" json:"email"`
+	IsActive  bool               `bson:"isActive" json:"isActive"`
 	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
 	UpdatedAt time.Time          `bson:"updatedAt" json:"updatedAt"`
 }

@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
-	"log"
 
 	"chi-mongo-backend/internal/models"
 )
@@ -57,7 +57,7 @@ func (s *qrMaskingAPIService) ProcessQRMasking(ctx context.Context, req *models.
 
 	// Log the request for debugging
 	log.Printf("Making QR API request to: %s", s.apiURL)
-	log.Printf("Request payload: %s", string(jsonData))
+	log.Printf("QR Masking request ReqID=%s payload_bytes=%d", req.ReqID, len(jsonData))
 
 	// Make the API call
 	resp, err := s.httpClient.Do(httpReq)
@@ -74,7 +74,7 @@ func (s *qrMaskingAPIService) ProcessQRMasking(ctx context.Context, req *models.
 
 	// Log the response for debugging
 	log.Printf("QR API response status: %d", resp.StatusCode)
-	log.Printf("QR API response body: %s", string(body))
+	log.Printf("QR API response bytes: %d", len(body))
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
@@ -83,10 +83,10 @@ func (s *qrMaskingAPIService) ProcessQRMasking(ctx context.Context, req *models.
 
 	// Parse the response - exact format from API specification
 	var apiResponse struct {
-		ReqID        string `json:"req_id"`
-		Success      bool   `json:"success"`
+		ReqID        string  `json:"req_id"`
+		Success      bool    `json:"success"`
 		ErrorMessage *string `json:"error_message"`
-		MaskedBase64 string `json:"masked_base64"`
+		MaskedBase64 string  `json:"masked_base64"`
 	}
 
 	if err := json.Unmarshal(body, &apiResponse); err != nil {

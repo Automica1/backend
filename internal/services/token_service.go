@@ -3,12 +3,13 @@ package services
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/repository"
 	apperrors "chi-mongo-backend/pkg/errors"
-	
+
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -18,6 +19,7 @@ type CreditTokenService interface {
 	GetTokensByCreatedBy(ctx context.Context, createdBy string) ([]*models.CreditToken, error)
 	GetAllTokens(ctx context.Context) ([]*models.CreditToken, error)
 	GetTokensByStatus(ctx context.Context, isUsed bool) ([]*models.CreditToken, error)
+	ListTokens(ctx context.Context, query models.AdminListQuery) ([]*models.CreditToken, int, error)
 	DeleteToken(ctx context.Context, tokenID string, adminEmail string) (*models.TokenResponse, error)
 }
 
@@ -133,6 +135,60 @@ func (s *creditTokenService) GetTokensByStatus(ctx context.Context, isUsed bool)
 	return s.tokenRepo.GetByStatus(ctx, isUsed)
 }
 
+func (s *creditTokenService) ListTokens(ctx context.Context, query models.AdminListQuery) ([]*models.CreditToken, int, error) {
+	tokens, err := s.tokenRepo.GetAll(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	filtered := make([]*models.CreditToken, 0, len(tokens))
+	search := strings.ToLower(strings.TrimSpace(query.Search))
+	for _, token := range tokens {
+		if search != "" {
+			if !strings.Contains(strings.ToLower(token.Token), search) &&
+				!strings.Contains(strings.ToLower(token.Description), search) &&
+				!strings.Contains(strings.ToLower(token.CreatedBy), search) {
+				continue
+			}
+		}
+
+		switch query.Status {
+		case "used":
+			if !token.IsUsed {
+				continue
+			}
+		case "unused":
+			if token.IsUsed {
+				continue
+			}
+		case "expired":
+			if !token.IsExpired() {
+				continue
+			}
+		}
+
+		filtered = append(filtered, token)
+	}
+
+	total := len(filtered)
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	skip := query.Skip
+	if skip < 0 {
+		skip = 0
+	}
+	if skip > total {
+		return []*models.CreditToken{}, total, nil
+	}
+	end := skip + limit
+	if end > total {
+		end = total
+	}
+	return filtered[skip:end], total, nil
+}
+
 func (s *creditTokenService) DeleteToken(ctx context.Context, tokenID string, adminEmail string) (*models.TokenResponse, error) {
 	// Validate tokenID format (ObjectID)
 	objID, err := primitive.ObjectIDFromHex(tokenID)
@@ -149,8 +205,8 @@ func (s *creditTokenService) DeleteToken(ctx context.Context, tokenID string, ad
 	// Check if the admin is the creator of the token (optional security check)
 	if token.CreatedBy != adminEmail {
 		return nil, apperrors.NewAppError(
-			apperrors.ErrForbidden, 
-			403, 
+			apperrors.ErrForbidden,
+			403,
 			"you can only delete tokens you created",
 		)
 	}
@@ -158,8 +214,8 @@ func (s *creditTokenService) DeleteToken(ctx context.Context, tokenID string, ad
 	// Check if token is already used (optional business rule)
 	if token.IsUsed {
 		return nil, apperrors.NewAppError(
-			apperrors.ErrBadRequest, 
-			400, 
+			apperrors.ErrBadRequest,
+			400,
 			"cannot delete used tokens",
 		)
 	}

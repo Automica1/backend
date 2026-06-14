@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
-	"log"
 
 	"chi-mongo-backend/internal/models"
 )
@@ -56,7 +56,7 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 
 	// Log the request for debugging
 	log.Printf("Making QR Extraction API request to: %s", s.apiURL)
-	log.Printf("Request payload: %s", string(jsonData))
+	log.Printf("QR Extraction request ReqID=%s payload_bytes=%d", req.ReqID, len(jsonData))
 
 	// Make the API call
 	resp, err := s.httpClient.Do(httpReq)
@@ -73,7 +73,7 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 
 	// Log the response for debugging
 	log.Printf("QR Extraction API response status: %d", resp.StatusCode)
-	log.Printf("QR Extraction API response body: %s", string(body))
+	log.Printf("QR Extraction API response bytes: %d", len(body))
 
 	// Handle non-OK HTTP status codes
 	if resp.StatusCode != http.StatusOK {
@@ -87,7 +87,7 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 				Status:  "failed",
 				Message: fmt.Sprintf("API returned status %d", resp.StatusCode),
 			}
-			
+
 			// Extract error message if available
 			if errorMsg, exists := errorResponse["error_message"]; exists {
 				if errorStr, ok := errorMsg.(string); ok {
@@ -98,10 +98,10 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 					result.Message = messageStr
 				}
 			}
-			
+
 			return result, nil
 		}
-		
+
 		// Fallback for unparseable error responses
 		return &models.QRExtractionResult{
 			ReqID:   req.ReqID,
@@ -113,10 +113,10 @@ func (s *qrExtractionAPIService) ProcessQRExtraction(ctx context.Context, req *m
 
 	// Parse the successful response - exact format from API specification
 	var apiResponse struct {
-		ReqID        string  `json:"req_id"`
-		Success      bool    `json:"success"`
-		ErrorMessage *string `json:"error_message"`
-		Result       *string `json:"result"`
+		ReqID        string      `json:"req_id"`
+		Success      bool        `json:"success"`
+		ErrorMessage *string     `json:"error_message"`
+		Result       *string     `json:"result"`
 		Data         interface{} `json:"data,omitempty"` // Additional data field
 	}
 

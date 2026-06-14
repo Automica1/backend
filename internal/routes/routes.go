@@ -6,6 +6,7 @@ import (
 
 	"chi-mongo-backend/internal/handlers"
 	"chi-mongo-backend/internal/middleware"
+	"chi-mongo-backend/internal/repository"
 	"chi-mongo-backend/internal/services"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +14,7 @@ import (
 
 type Handlers struct {
 	Health                *handlers.HealthHandler
+	Admin                 *handlers.AdminHandler
 	User                  *handlers.UserHandler
 	Credits               *handlers.CreditsHandler
 	QRMasking             *handlers.QRMaskingHandler
@@ -33,16 +35,17 @@ type Handlers struct {
 type Services struct {
 	APIKeyService services.APIKeyService
 	UsageService  services.UsageService // Add usage service
+	UserRepo      repository.UserRepository
 }
 
 func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Global middleware
-	r.Use(middleware.Logger())
-	r.Use(middleware.Recoverer())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.RealIP())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Recoverer())
 	r.Use(middleware.Timeout(90 * time.Second))
 	r.Use(middleware.CORS())
 
@@ -50,20 +53,18 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 	r.Get("/", h.Health.HealthCheck)
 	r.Get("/health", h.Health.HealthCheck)
 
-	// Debug route (NO AUTH - for easy testing)
-	r.Get("/debug/token", h.Debug.ShowTokenData)
-
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public routes (no authentication required)
 		r.Group(func(r chi.Router) {
 			r.Post("/register", h.User.RegisterUser)
 			r.Get("/plans", h.Plan.GetActivePlans) // Public plans list
+			r.Get("/billing-config", h.Plan.GetPublicBillingConfig)
 		})
 
 		// Protected routes (JWT authentication required)
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Auth())
+			r.Use(middleware.Auth(s.UserRepo))
 
 			// Credits routes with different authorization levels
 			r.Route("/credits", func(r chi.Router) {
@@ -101,9 +102,11 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 
 					// GET my tokens - see tokens created by the current admin
 					r.Get("/my-tokens", h.Token.GetMyTokens)
+					r.Get("/my-tokens/export.csv", h.Token.ExportTokensCSV)
 
 					// GET all tokens - see all tokens in the system
 					r.Get("/all", h.Token.GetAllTokens)
+					r.Get("/all/export.csv", h.Token.ExportTokensCSV)
 
 					// GET used tokens - see all tokens that have been redeemed
 					r.Get("/used", h.Token.GetUsedTokens)
@@ -150,9 +153,13 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Route("/users", func(r chi.Router) {
 					// GET all users - list all users in the system
 					r.Get("/", h.User.GetAllUsers)
+					r.Get("/export.csv", h.User.ExportUsersCSV)
 
 					// GET specific user - get user details by ID
 					r.Get("/{userId}", h.User.GetUserByID)
+					r.Delete("/{userId}", h.User.DeleteUser)
+					r.Post("/{userId}/suspend", h.User.SuspendUser)
+					r.Post("/{userId}/reactivate", h.User.ReactivateUser)
 
 					// GET user stats - get aggregated user statistics
 					r.Get("/stats", h.User.GetUserStats)
@@ -179,6 +186,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Get("/services", h.Usage.GetServiceUserStats)
 
 					// Individual user's usage history
+					r.Get("/history", h.Usage.GetServiceUsageHistory)
 					// GET /api/v1/admin/usage/user/{userId}/history?limit=50&skip=0
 					r.Get("/user/{userId}/history", h.Usage.GetUserUsageHistory)
 
@@ -189,9 +197,18 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 
 				// Subscription management endpoints (Admin only)
 				r.Route("/subscriptions", func(r chi.Router) {
-					r.Get("/", h.Subscription.GetAllSubscriptions)
+					r.Get("/", h.Subscription.GetAdminSubscriptions)
 					r.Get("/active-count", h.Subscription.GetActiveCount)
+					r.Get("/{subscriptionId}", h.Subscription.GetAdminSubscription)
+					r.Post("/{subscriptionId}/reconcile", h.Subscription.ReconcileAdminSubscription)
 				})
+
+				// Admin intelligence and logs
+				r.Get("/search", h.Admin.Search)
+				r.Get("/logs", h.Admin.Logs)
+				r.Get("/audit-logs/recent", h.Admin.RecentAuditLogs)
+				r.Get("/summary", h.Admin.Summary)
+				r.Get("/export/summary.csv", h.Admin.ExportSummaryCSV)
 
 				// Plan management endpoints (Admin only)
 				r.Route("/plans", func(r chi.Router) {

@@ -31,17 +31,22 @@ func (r *activityRepository) Create(ctx context.Context, activity *models.Activi
 func (r *activityRepository) GetByUserID(ctx context.Context, userID string) ([]models.ActivityLog, error) {
 	// Sort by timestamp descending (most recent first)
 	opts := options.Find().SetSort(bson.D{{Key: "timestamp", Value: -1}})
-	
+
 	cursor, err := r.collection.Find(ctx, bson.M{"userId": userID}, opts)
 	if err != nil {
 		return nil, err
 	}
 	defer cursor.Close(ctx)
-	
+
 	var activities []models.ActivityLog
 	if err = cursor.All(ctx, &activities); err != nil {
 		return nil, err
 	}
-	
+
 	return activities, nil
+}
+
+func (r *activityRepository) DeleteByUserID(ctx context.Context, userID string) error {
+	_, err := r.collection.DeleteMany(ctx, bson.M{"userId": userID})
+	return err
 }

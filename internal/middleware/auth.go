@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"chi-mongo-backend/internal/repository"
 	"chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
 	"github.com/golang-jwt/jwt/v5"
@@ -48,7 +49,7 @@ type JWK struct {
 }
 
 // Auth middleware validates Kinde JWT tokens using RS256
-func Auth() func(http.Handler) http.Handler {
+func Auth(userRepo repository.UserRepository) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Get Authorization header
@@ -107,11 +108,22 @@ func Auth() func(http.Handler) http.Handler {
 			// Check if user is admin
 			isAdmin := isUserAdmin(claims.Roles)
 
+			if userRepo != nil {
+				if suspended, err := userRepo.IsSuspendedByEmail(r.Context(), claims.Email); err == nil && suspended {
+					utils.SendErrorResponse(w, apperrors.NewAppError(
+						apperrors.ErrForbidden,
+						http.StatusForbidden,
+						"account is suspended",
+					))
+					return
+				}
+			}
+
 			// Add email and admin status to request context
 			ctx := context.WithValue(r.Context(), "email", claims.Email)
 			ctx = context.WithValue(ctx, "isAdmin", isAdmin)
 			ctx = context.WithValue(ctx, "roles", claims.Roles)
-			
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

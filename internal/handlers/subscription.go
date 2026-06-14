@@ -2,7 +2,11 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
+	"strconv"
+
+	"github.com/go-chi/chi/v5"
 
 	"chi-mongo-backend/internal/middleware"
 	"chi-mongo-backend/internal/models"
@@ -12,12 +16,14 @@ import (
 )
 
 type SubscriptionHandler struct {
-	subService services.SubscriptionService
+	subService   services.SubscriptionService
+	adminService services.AdminService
 }
 
-func NewSubscriptionHandler(subService services.SubscriptionService) *SubscriptionHandler {
+func NewSubscriptionHandler(subService services.SubscriptionService, adminService services.AdminService) *SubscriptionHandler {
 	return &SubscriptionHandler{
-		subService: subService,
+		subService:   subService,
+		adminService: adminService,
 	}
 }
 
@@ -191,6 +197,75 @@ func (h *SubscriptionHandler) GetAllSubscriptions(w http.ResponseWriter, r *http
 	utils.SendJSONResponse(w, http.StatusOK, subs)
 }
 
+func (h *SubscriptionHandler) GetAdminSubscriptions(w http.ResponseWriter, r *http.Request) {
+	query := models.AdminSubscriptionQuery{
+		Search:         r.URL.Query().Get("search"),
+		Status:         r.URL.Query().Get("status"),
+		UserID:         r.URL.Query().Get("userId"),
+		Email:          r.URL.Query().Get("email"),
+		PlanID:         r.URL.Query().Get("planId"),
+		SubscriptionID: r.URL.Query().Get("subscriptionId"),
+	}
+
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			query.Limit = parsed
+		}
+	}
+	if value := r.URL.Query().Get("skip"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			query.Skip = parsed
+		}
+	}
+
+	response, err := h.subService.ListAdminSubscriptions(r.Context(), query)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
+func (h *SubscriptionHandler) GetAdminSubscription(w http.ResponseWriter, r *http.Request) {
+	subscriptionID := chi.URLParam(r, "subscriptionId")
+	if subscriptionID == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, 400, "subscriptionId is required", ""))
+		return
+	}
+
+	response, err := h.subService.GetAdminSubscription(r.Context(), subscriptionID)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
+func (h *SubscriptionHandler) ReconcileAdminSubscription(w http.ResponseWriter, r *http.Request) {
+	subscriptionID := chi.URLParam(r, "subscriptionId")
+	if subscriptionID == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, 400, "subscriptionId is required", ""))
+		return
+	}
+
+	response, err := h.subService.ReconcileAdminSubscription(r.Context(), subscriptionID)
+	if err != nil {
+		h.recordAdminSubscriptionAction(r, "subscription_reconcile", subscriptionID, "failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	h.recordAdminSubscriptionAction(r, "subscription_reconcile", subscriptionID, "success", map[string]interface{}{
+		"status": response.Subscription.Status,
+	})
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
 func (h *SubscriptionHandler) GetActiveCount(w http.ResponseWriter, r *http.Request) {
 	count, err := h.subService.GetActiveSubscriptionCount(r.Context())
 	if err != nil {
@@ -201,19 +276,33 @@ func (h *SubscriptionHandler) GetActiveCount(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *SubscriptionHandler) Webhook(w http.ResponseWriter, r *http.Request) {
-	var payload models.WebhookPayload
-	if err := utils.DecodeJSONBody(r, &payload); err != nil {
-		utils.SendErrorResponse(w, err)
+	rawPayload, err := io.ReadAll(r.Body)
+	if err != nil {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrBadRequest, http.StatusBadRequest, "failed to read webhook body", err.Error()))
 		return
 	}
 
 	signature := r.Header.Get("X-Razorpay-Signature")
-
-	err := h.subService.HandleWebhook(r.Context(), &payload, signature)
-	if err != nil {
+	if err := h.subService.HandleWebhookRaw(r.Context(), rawPayload, signature); err != nil {
 		utils.SendErrorResponse(w, err)
 		return
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *SubscriptionHandler) recordAdminSubscriptionAction(r *http.Request, action, targetID, outcome string, metadata map[string]interface{}) {
+	if h.adminService == nil {
+		return
+	}
+
+	actorEmail, _ := middleware.GetEmailFromContext(r.Context())
+	_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+		ActorEmail: actorEmail,
+		Action:     action,
+		TargetType: "subscription",
+		TargetID:   targetID,
+		Outcome:    outcome,
+		Metadata:   metadata,
+	})
 }

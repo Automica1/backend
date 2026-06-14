@@ -3,7 +3,9 @@ package handlers
 
 import (
 	"net/http"
+	"os"
 
+	"chi-mongo-backend/internal/middleware"
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
 	"chi-mongo-backend/pkg/utils"
@@ -12,12 +14,14 @@ import (
 )
 
 type PlanHandler struct {
-	planService services.PlanService
+	planService  services.PlanService
+	adminService services.AdminService
 }
 
-func NewPlanHandler(planService services.PlanService) *PlanHandler {
+func NewPlanHandler(planService services.PlanService, adminService services.AdminService) *PlanHandler {
 	return &PlanHandler{
-		planService: planService,
+		planService:  planService,
+		adminService: adminService,
 	}
 }
 
@@ -29,6 +33,12 @@ func (h *PlanHandler) GetActivePlans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	utils.SendJSONResponse(w, http.StatusOK, plans)
+}
+
+func (h *PlanHandler) GetPublicBillingConfig(w http.ResponseWriter, r *http.Request) {
+	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
+		"razorpayKeyId": os.Getenv("RAZORPAY_KEY_ID"),
+	})
 }
 
 // Admin endpoints
@@ -54,6 +64,20 @@ func (h *PlanHandler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok && h.adminService != nil {
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "create_plan",
+			TargetType: "plan",
+			TargetID:   plan.PlanID,
+			Outcome:    "success",
+			Metadata: map[string]interface{}{
+				"price":   plan.Price,
+				"credits": plan.Credits,
+			},
+		})
+	}
+
 	utils.SendJSONResponse(w, http.StatusCreated, plan)
 }
 
@@ -71,6 +95,16 @@ func (h *PlanHandler) UpdatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok && h.adminService != nil {
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "update_plan",
+			TargetType: "plan",
+			TargetID:   planID,
+			Outcome:    "success",
+		})
+	}
+
 	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"message": "plan updated successfully"})
 }
 
@@ -80,6 +114,16 @@ func (h *PlanHandler) DeletePlan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
+	}
+
+	if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok && h.adminService != nil {
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "delete_plan",
+			TargetType: "plan",
+			TargetID:   planID,
+			Outcome:    "success",
+		})
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"message": "plan deactivated successfully"})

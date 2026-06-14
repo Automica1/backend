@@ -47,9 +47,16 @@ func main() {
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys"))
 	activityRepo := repository.NewActivityRepository(db.GetCollection("activities"))
+	auditRepo := repository.NewAdminAuditRepository(db.GetCollection("admin_audit_logs"))
 	usageRepo := repository.NewUsageRepository(db.GetCollection("usage"))              // Add usage repository
 	subRepo := repository.NewSubscriptionRepository(db.GetCollection("subscriptions")) // Add subscription repository
 	planRepo := repository.NewPlanRepository(db.GetCollection("plans"))                // Add plan repository
+	runtimeLogRepo := repository.NewRuntimeLogRepository(
+		cfg.Logs.AccessPath,
+		cfg.Logs.ErrorPath,
+		cfg.Logs.NginxAccessPath,
+		cfg.Logs.NginxErrorPath,
+	)
 
 	// Initialize services
 	userService := services.NewUserService(userRepo, creditsRepo, activityRepo)
@@ -60,6 +67,7 @@ func main() {
 	planService := services.NewPlanService(planRepo)    // Add plan service
 	emailService := services.NewEmailService(cfg.Email.FromEmail, cfg.Email.FromName, cfg.Email.Password)
 	subService := services.NewSubscriptionService(subRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+	adminService := services.NewAdminService(auditRepo, runtimeLogRepo, userService, tokenService, planService, usageService, subService)
 
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
@@ -96,9 +104,10 @@ func main() {
 	// Initialize handlers (only SignatureVerification has usage tracking implemented)
 	handlers := &routes.Handlers{
 		Health:  handlers.NewHealthHandler(),
-		User:    handlers.NewUserHandler(userService),
-		Credits: handlers.NewCreditsHandler(creditsService, userService),
-		Token:   handlers.NewTokenHandler(tokenService, creditsService, userService),
+		Admin:   handlers.NewAdminHandler(adminService),
+		User:    handlers.NewUserHandler(userService, adminService),
+		Credits: handlers.NewCreditsHandler(creditsService, userService, adminService),
+		Token:   handlers.NewTokenHandler(tokenService, creditsService, userService, adminService),
 		APIKey:  handlers.NewAPIKeyHandler(apiKeyService, userService),
 		// These handlers don't have usage tracking yet - using original constructors
 		QRMasking:    handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
@@ -110,9 +119,9 @@ func main() {
 		FaceDetect:   handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService, usageService),
 		FaceVerify:   handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService, usageService),
 		Debug:        handlers.NewDebugHandler(),
-		Usage:        handlers.NewUsageHandler(usageService),      // Usage handler for admin endpoints
-		Subscription: handlers.NewSubscriptionHandler(subService), // Add subscription handler
-		Plan:         handlers.NewPlanHandler(planService),        // Add plan handler
+		Usage:        handlers.NewUsageHandler(usageService),                    // Usage handler for admin endpoints
+		Subscription: handlers.NewSubscriptionHandler(subService, adminService), // Add subscription handler
+		Plan:         handlers.NewPlanHandler(planService, adminService),        // Add plan handler
 	}
 
 	// Verify handlers are initialized
@@ -134,6 +143,7 @@ func main() {
 	services := &routes.Services{
 		APIKeyService: apiKeyService,
 		UsageService:  usageService, // Add usage service to routes
+		UserRepo:      userRepo,
 	}
 	// Setup routes
 	router := routes.SetupRoutes(handlers, services)
@@ -153,7 +163,6 @@ func main() {
 		log.Println("📋 Available endpoints:")
 		log.Println("  GET  / - Health check")
 		log.Println("  GET  /health - Health check")
-		log.Println("  GET  /debug/token - Debug token data (NO AUTH REQUIRED)")
 		log.Println("  POST /api/v1/register - Register new user")
 		log.Println("  POST /api/v1/credits/deduct - Deduct credits from user")
 		log.Println("  POST /api/v1/credits/add - Add credits to user")
@@ -188,7 +197,7 @@ func main() {
 		log.Println("  POST /api/v1/subscription/verify-payment - Verify Razorpay payment (requires Bearer token)")
 		log.Println("  GET  /api/v1/subscription/status - Get user subscription status (requires Bearer token)")
 		log.Println("  POST /api/v1/subscription/webhook - Razorpay webhook handler (Public)")
-		log.Println("✅ CORS enabled for all origins")
+		log.Println("✅ CORS configured with allowed origins")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("❌ Server failed to start: %v", err)

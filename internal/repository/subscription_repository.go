@@ -18,6 +18,7 @@ type SubscriptionRepository interface {
 	GetByUserID(ctx context.Context, userID string) (*models.Subscription, error)
 	GetByUserIDAndStatus(ctx context.Context, userID string, status models.SubscriptionStatus) (*models.Subscription, error)
 	GetBySubscriptionID(ctx context.Context, subID string) (*models.Subscription, error)
+	List(ctx context.Context, query models.AdminSubscriptionQuery) ([]models.Subscription, int64, error)
 	Update(ctx context.Context, sub *models.Subscription) error
 	UpdateStatus(ctx context.Context, subID string, status models.SubscriptionStatus) error
 	GetAll(ctx context.Context) ([]models.Subscription, error)
@@ -99,6 +100,74 @@ func (r *subscriptionRepository) GetBySubscriptionID(ctx context.Context, subID 
 		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to get subscription", err.Error())
 	}
 	return &sub, nil
+}
+
+func (r *subscriptionRepository) List(ctx context.Context, query models.AdminSubscriptionQuery) ([]models.Subscription, int64, error) {
+	filter := bson.M{}
+
+	if query.Status != "" {
+		filter["status"] = query.Status
+	}
+	if query.UserID != "" {
+		filter["userId"] = query.UserID
+	}
+	if query.Email != "" {
+		filter["email"] = bson.M{"$regex": query.Email, "$options": "i"}
+	}
+	if query.PlanID != "" {
+		filter["planId"] = query.PlanID
+	}
+	if query.SubscriptionID != "" {
+		filter["subscriptionId"] = bson.M{"$regex": query.SubscriptionID, "$options": "i"}
+	}
+	if query.Search != "" {
+		search := bson.M{
+			"$or": []bson.M{
+				{"userId": bson.M{"$regex": query.Search, "$options": "i"}},
+				{"email": bson.M{"$regex": query.Search, "$options": "i"}},
+				{"planId": bson.M{"$regex": query.Search, "$options": "i"}},
+				{"subscriptionId": bson.M{"$regex": query.Search, "$options": "i"}},
+				{"status": bson.M{"$regex": query.Search, "$options": "i"}},
+			},
+		}
+		if len(filter) == 0 {
+			filter = search
+		} else {
+			filter["$and"] = []bson.M{search}
+		}
+	}
+
+	total, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to count subscriptions", err.Error())
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	skip := query.Skip
+	if skip < 0 {
+		skip = 0
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetLimit(int64(limit)).
+		SetSkip(int64(skip))
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to get subscriptions", err.Error())
+	}
+	defer cursor.Close(ctx)
+
+	var subs []models.Subscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, 0, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to decode subscriptions", err.Error())
+	}
+
+	return subs, total, nil
 }
 
 func (r *subscriptionRepository) Update(ctx context.Context, sub *models.Subscription) error {

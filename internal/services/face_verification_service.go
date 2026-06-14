@@ -59,7 +59,7 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 
 	// Log the request for debugging
 	log.Printf("Making Face Verification API request to: %s", s.apiURL)
-	log.Printf("Request payload: %s", string(jsonData))
+	log.Printf("Face Verification request ReqID=%s payload_bytes=%d", req.ReqID, len(jsonData))
 
 	// Make the API call
 	resp, err := s.httpClient.Do(httpReq)
@@ -76,7 +76,7 @@ func (s *faceVerificationAPIService) ProcessFaceVerification(ctx context.Context
 
 	// Log the response for debugging
 	log.Printf("Face Verification API response status: %d", resp.StatusCode)
-	log.Printf("Face Verification API response body: %s", string(body))
+	log.Printf("Face Verification API response bytes: %d", len(body))
 
 	// Parse the raw response to preserve original structure
 	var rawResponse map[string]interface{}

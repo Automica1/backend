@@ -4,6 +4,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"chi-mongo-backend/internal/models"
 	apperrors "chi-mongo-backend/pkg/errors"
@@ -26,6 +27,9 @@ func NewUserRepository(collection *mongo.Collection) UserRepository {
 }
 
 func (r *userRepository) Create(ctx context.Context, user *models.User) error {
+	if !user.IsActive {
+		user.IsActive = true
+	}
 	result, err := r.collection.InsertOne(ctx, user)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -33,7 +37,7 @@ func (r *userRepository) Create(ctx context.Context, user *models.User) error {
 		}
 		return err
 	}
-	
+
 	user.ID = result.InsertedID.(primitive.ObjectID)
 	return nil
 }
@@ -62,9 +66,50 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*models.
 	return &user, nil
 }
 
+func (r *userRepository) IsSuspendedByEmail(ctx context.Context, email string) (bool, error) {
+	var doc bson.M
+	err := r.collection.FindOne(ctx, bson.M{"email": email}).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, apperrors.NewUserNotFoundError()
+		}
+		return false, err
+	}
+
+	rawActive, ok := doc["isActive"]
+	if !ok {
+		return false, nil
+	}
+
+	isActive, ok := rawActive.(bool)
+	if !ok {
+		return false, nil
+	}
+
+	return !isActive, nil
+}
+
 func (r *userRepository) Delete(ctx context.Context, userID string) error {
 	_, err := r.collection.DeleteOne(ctx, bson.M{"userId": userID})
 	return err
+}
+
+func (r *userRepository) UpdateActiveStatus(ctx context.Context, userID string, isActive bool) error {
+	update := bson.M{
+		"$set": bson.M{
+			"isActive":  isActive,
+			"updatedAt": time.Now(),
+		},
+	}
+
+	result, err := r.collection.UpdateOne(ctx, bson.M{"userId": userID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return apperrors.NewUserNotFoundError()
+	}
+	return nil
 }
 
 // Admin methods

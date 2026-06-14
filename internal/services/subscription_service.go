@@ -6,7 +6,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"chi-mongo-backend/internal/models"
@@ -21,15 +26,20 @@ type RazorpayGateway interface {
 	CreateOrder(data map[string]interface{}) (map[string]interface{}, error)
 	CreateSubscription(data map[string]interface{}) (map[string]interface{}, error)
 	CancelSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error)
+	FetchSubscription(subscriptionID string) (map[string]interface{}, error)
 }
 
 type razorpayGateway struct {
 	client *razorpay.Client
+	key    string
+	secret string
 }
 
 func newRazorpayGateway(key, secret string) RazorpayGateway {
 	return &razorpayGateway{
 		client: razorpay.NewClient(key, secret),
+		key:    key,
+		secret: secret,
 	}
 }
 
@@ -49,6 +59,35 @@ func (g *razorpayGateway) CancelSubscription(subscriptionID string, data map[str
 	return g.client.Subscription.Cancel(subscriptionID, data, nil)
 }
 
+func (g *razorpayGateway) FetchSubscription(subscriptionID string) (map[string]interface{}, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://api.razorpay.com/v1/subscriptions/%s", subscriptionID), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(g.key, g.secret)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("razorpay fetch failed: %s", strings.TrimSpace(string(body)))
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 type SubscriptionService interface {
 	CreateOrder(ctx context.Context, userID, email, name, contact, planID string) (*models.SubscriptionResponse, error)
 	VerifyPayment(ctx context.Context, userID string, req *models.VerifyPaymentRequest) (*models.SubscriptionResponse, error)
@@ -59,6 +98,10 @@ type SubscriptionService interface {
 	CancelSubscription(ctx context.Context, userID string) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 	GetActiveSubscriptionCount(ctx context.Context) (int64, error)
+	ListAdminSubscriptions(ctx context.Context, query models.AdminSubscriptionQuery) (*models.AdminSubscriptionListResponse, error)
+	GetAdminSubscription(ctx context.Context, subscriptionID string) (*models.AdminSubscriptionDetailResponse, error)
+	ReconcileAdminSubscription(ctx context.Context, subscriptionID string) (*models.AdminSubscriptionDetailResponse, error)
+	HandleWebhookRaw(ctx context.Context, rawPayload []byte, signature string) error
 	HandleWebhook(ctx context.Context, payload *models.WebhookPayload, signature string) error
 }
 
@@ -509,12 +552,245 @@ func (s *subscriptionService) GetActiveSubscriptionCount(ctx context.Context) (i
 	return s.subRepo.CountActive(ctx)
 }
 
+func (s *subscriptionService) ListAdminSubscriptions(ctx context.Context, query models.AdminSubscriptionQuery) (*models.AdminSubscriptionListResponse, error) {
+	subs, total, err := s.subRepo.List(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := s.decorateSubscriptions(ctx, subs)
+	if err != nil {
+		return nil, err
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	skip := query.Skip
+	if skip < 0 {
+		skip = 0
+	}
+
+	return &models.AdminSubscriptionListResponse{
+		Message:       "Subscriptions retrieved successfully",
+		Subscriptions: converted,
+		Total:         total,
+		Limit:         limit,
+		Skip:          skip,
+	}, nil
+}
+
+func (s *subscriptionService) GetAdminSubscription(ctx context.Context, subscriptionID string) (*models.AdminSubscriptionDetailResponse, error) {
+	sub, err := s.subRepo.GetBySubscriptionID(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := s.decorateSubscriptions(ctx, []models.Subscription{*sub})
+	if err != nil {
+		return nil, err
+	}
+	if len(converted) == 0 {
+		return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "subscription not found", "")
+	}
+
+	return &models.AdminSubscriptionDetailResponse{
+		Message:      "Subscription retrieved successfully",
+		Subscription: converted[0],
+	}, nil
+}
+
+func (s *subscriptionService) ReconcileAdminSubscription(ctx context.Context, subscriptionID string) (*models.AdminSubscriptionDetailResponse, error) {
+	sub, err := s.subRepo.GetBySubscriptionID(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+
+	remote, err := s.razorpay.FetchSubscription(subscriptionID)
+	if err != nil {
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to fetch razorpay subscription", err.Error())
+	}
+
+	if status, ok := remote["status"].(string); ok && status != "" {
+		sub.Status = normalizeSubscriptionStatus(status)
+	}
+	if cancelAtCycleEnd, ok := asBool(remote["cancel_at_cycle_end"]); ok {
+		sub.CancelAtCycleEnd = cancelAtCycleEnd
+	}
+	if currentStart, ok := parseRemoteTime(remote["current_start"]); ok {
+		sub.CurrentPeriodStart = currentStart
+	}
+	if currentEnd, ok := parseRemoteTime(remote["current_end"]); ok {
+		sub.CurrentPeriodEnd = currentEnd
+	}
+	if endedAt, ok := parseRemoteTime(remote["ended_at"]); ok {
+		sub.CancelledAt = &endedAt
+	}
+	if sub.CancelAtCycleEnd && sub.CancelScheduledAt == nil {
+		now := time.Now()
+		sub.CancelScheduledAt = &now
+	}
+	sub.UpdatedAt = time.Now()
+
+	if err := s.subRepo.Update(ctx, sub); err != nil {
+		return nil, err
+	}
+
+	converted, err := s.decorateSubscriptions(ctx, []models.Subscription{*sub})
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.AdminSubscriptionDetailResponse{
+		Message:      "Subscription reconciled successfully",
+		Subscription: converted[0],
+	}, nil
+}
+
+func (s *subscriptionService) decorateSubscriptions(ctx context.Context, subs []models.Subscription) ([]models.AdminSubscription, error) {
+	plans, err := s.planService.GetAllPlans(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	planNames := make(map[string]struct {
+		Name         string
+		RazorpayPlan string
+	})
+	for _, plan := range plans {
+		planNames[plan.PlanID] = struct {
+			Name         string
+			RazorpayPlan string
+		}{Name: plan.Name, RazorpayPlan: plan.RazorpayPlanID}
+	}
+
+	result := make([]models.AdminSubscription, 0, len(subs))
+	for _, sub := range subs {
+		item := models.AdminSubscription{
+			ID:                 sub.ID,
+			UserID:             sub.UserID,
+			Email:              sub.Email,
+			PlanID:             sub.PlanID,
+			SubscriptionID:     sub.SubscriptionID,
+			Status:             sub.Status,
+			Amount:             sub.Amount,
+			Currency:           sub.Currency,
+			CurrentPeriodStart: sub.CurrentPeriodStart,
+			CurrentPeriodEnd:   sub.CurrentPeriodEnd,
+			GracePeriodEnd:     sub.GracePeriodEnd,
+			CancelAtCycleEnd:   sub.CancelAtCycleEnd,
+			CancelScheduledAt:  sub.CancelScheduledAt,
+			CancelledAt:        sub.CancelledAt,
+			PendingPlanID:      sub.PendingPlanID,
+			PlanChangeDate:     sub.PlanChangeDate,
+			CreatedAt:          sub.CreatedAt,
+			UpdatedAt:          sub.UpdatedAt,
+		}
+		if info, ok := planNames[sub.PlanID]; ok {
+			item.PlanName = info.Name
+			item.PlanRazorpayID = info.RazorpayPlan
+		}
+		result = append(result, item)
+	}
+
+	return result, nil
+}
+
+func normalizeSubscriptionStatus(raw string) models.SubscriptionStatus {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "created":
+		return models.SubscriptionStatusCreated
+	case "active":
+		return models.SubscriptionStatusActive
+	case "past_due":
+		return models.SubscriptionStatusPastDue
+	case "cancelled":
+		return models.SubscriptionStatusCancelled
+	case "expired":
+		return models.SubscriptionStatusExpired
+	default:
+		return models.SubscriptionStatus(raw)
+	}
+}
+
+func parseRemoteTime(value interface{}) (time.Time, bool) {
+	switch v := value.(type) {
+	case nil:
+		return time.Time{}, false
+	case time.Time:
+		return v, true
+	case float64:
+		if v <= 0 {
+			return time.Time{}, false
+		}
+		return time.Unix(int64(v), 0).UTC(), true
+	case int64:
+		if v <= 0 {
+			return time.Time{}, false
+		}
+		return time.Unix(v, 0).UTC(), true
+	case int:
+		if v <= 0 {
+			return time.Time{}, false
+		}
+		return time.Unix(int64(v), 0).UTC(), true
+	case string:
+		if v == "" {
+			return time.Time{}, false
+		}
+		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
+			return parsed, true
+		}
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
+			return time.Unix(parsed, 0).UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func asBool(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case float64:
+		return v != 0, true
+	case int:
+		return v != 0, true
+	case int64:
+		return v != 0, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes":
+			return true, true
+		case "false", "0", "no":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func (s *subscriptionService) HandleWebhookRaw(ctx context.Context, rawPayload []byte, signature string) error {
+	if s.webhookSecret == "" {
+		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "webhook secret is not configured", "")
+	}
+	if signature == "" {
+		return apperrors.NewAppError(apperrors.ErrValidation, 400, "missing webhook signature", "")
+	}
+	if !s.verifySignature(string(rawPayload), signature, s.webhookSecret) {
+		return apperrors.NewAppError(apperrors.ErrUnauthorized, 401, "invalid webhook signature", "")
+	}
+
+	var payload models.WebhookPayload
+	if err := json.Unmarshal(rawPayload, &payload); err != nil {
+		return apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid webhook payload", err.Error())
+	}
+
+	return s.HandleWebhook(ctx, &payload, signature)
+}
+
 func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models.WebhookPayload, signature string) error {
-	// In production, verify the webhook signature
-	// data := string(rawPayload) // we would need the raw bytes here
-	// if !s.verifySignature(data, signature, s.webhookSecret) {
-	//     return errors.New("invalid webhook signature")
-	// }
+	_ = signature
 
 	switch payload.Event {
 	case "subscription.charged":
@@ -642,6 +918,10 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 func (s *subscriptionService) verifySignature(data, signature, secret string) bool {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
-	expectedSignature := hex.EncodeToString(h.Sum(nil))
-	return expectedSignature == signature
+	expectedSignature := h.Sum(nil)
+	providedSignature, err := hex.DecodeString(strings.TrimSpace(signature))
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(expectedSignature, providedSignature)
 }

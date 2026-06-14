@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
-	"log"
 
 	"chi-mongo-backend/internal/models"
 )
@@ -55,7 +55,7 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 
 	// Log the request for debugging (without full base64 data)
 	log.Printf("Making Signature Verification API request to: %s", s.apiURL)
-	log.Printf("Request ReqID: %s, DocBase64 count: %d", req.ReqID, len(req.DocBase64))
+	log.Printf("Signature Verification request ReqID=%s payload_bytes=%d", req.ReqID, len(jsonData))
 
 	// Make the API call
 	resp, err := s.httpClient.Do(httpReq)
@@ -72,7 +72,7 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 
 	// Log the response for debugging
 	log.Printf("Signature Verification API response status: %d", resp.StatusCode)
-	log.Printf("Signature Verification API response body: %s", string(body))
+	log.Printf("Signature Verification API response bytes: %d", len(body))
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
@@ -103,7 +103,7 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 	if apiResponse.Success {
 		result.Status = "completed"
 		result.Message = "Signature verification completed successfully"
-		
+
 		// Add verification data if available
 		if apiResponse.Data != nil {
 			result.Data = &models.SignatureVerificationData{
@@ -120,11 +120,11 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 		}
 	}
 
-	log.Printf("Signature Verification API result: Success=%t, Status=%s, Message=%s", 
+	log.Printf("Signature Verification API result: Success=%t, Status=%s, Message=%s",
 		result.Success, result.Status, result.Message)
-	
+
 	if result.Data != nil {
-		log.Printf("Verification Data: Similarity=%.2f%%, Classification=%s", 
+		log.Printf("Verification Data: Similarity=%.2f%%, Classification=%s",
 			result.Data.SimilarityPercentage, result.Data.Classification)
 	}
 

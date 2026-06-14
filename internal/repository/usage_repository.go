@@ -18,8 +18,11 @@ type UsageRepository interface {
 	GetGlobalStats(ctx context.Context, startDate, endDate *time.Time) ([]models.UsageStats, error)
 	GetUserStats(ctx context.Context, startDate, endDate *time.Time) ([]models.UserUsageStats, error)
 	GetServiceUserStats(ctx context.Context, serviceName string, startDate, endDate *time.Time) ([]models.ServiceUserStats, error)
-	GetUserUsageHistory(ctx context.Context, userID string, limit, skip int) ([]models.ServiceUsage, error)
-	GetServiceUsageHistory(ctx context.Context, serviceName string, limit, skip int) ([]models.ServiceUsage, error)
+	GetUserUsageHistory(ctx context.Context, userID string, startDate, endDate *time.Time, limit, skip int) ([]models.ServiceUsage, error)
+	GetServiceUsageHistory(ctx context.Context, serviceName string, startDate, endDate *time.Time, limit, skip int) ([]models.ServiceUsage, error)
+	GetAllUsageHistory(ctx context.Context, startDate, endDate *time.Time, limit, skip int) ([]models.ServiceUsage, error)
+	CountUsageHistory(ctx context.Context, startDate, endDate *time.Time) (int64, error)
+	CountServiceUsageHistory(ctx context.Context, serviceName string, startDate, endDate *time.Time) (int64, error)
 }
 
 type usageRepository struct {
@@ -35,7 +38,7 @@ func NewUsageRepository(collection *mongo.Collection) UsageRepository {
 func (r *usageRepository) CreateUsage(ctx context.Context, usage *models.ServiceUsage) error {
 	usage.ID = primitive.NewObjectID()
 	usage.CreatedAt = time.Now()
-	
+
 	_, err := r.collection.InsertOne(ctx, usage)
 	return err
 }
@@ -47,12 +50,12 @@ func (r *usageRepository) GetGlobalStats(ctx context.Context, startDate, endDate
 		},
 		{
 			"$group": bson.M{
-				"_id": "$service_name",
+				"_id":         "$service_name",
 				"total_calls": bson.M{"$sum": 1},
 				"success_calls": bson.M{
 					"$sum": bson.M{
 						"$cond": bson.M{
-							"if": "$success",
+							"if":   "$success",
 							"then": 1,
 							"else": 0,
 						},
@@ -61,7 +64,7 @@ func (r *usageRepository) GetGlobalStats(ctx context.Context, startDate, endDate
 				"failed_calls": bson.M{
 					"$sum": bson.M{
 						"$cond": bson.M{
-							"if": "$success",
+							"if":   "$success",
 							"then": 0,
 							"else": 1,
 						},
@@ -96,13 +99,13 @@ func (r *usageRepository) GetUserStats(ctx context.Context, startDate, endDate *
 		},
 		{
 			"$group": bson.M{
-				"_id": "$user_id",
-				"email": bson.M{"$first": "$email"},
+				"_id":         "$user_id",
+				"email":       bson.M{"$first": "$email"},
 				"total_calls": bson.M{"$sum": 1},
 				"success_calls": bson.M{
 					"$sum": bson.M{
 						"$cond": bson.M{
-							"if": "$success",
+							"if":   "$success",
 							"then": 1,
 							"else": 0,
 						},
@@ -111,7 +114,7 @@ func (r *usageRepository) GetUserStats(ctx context.Context, startDate, endDate *
 				"failed_calls": bson.M{
 					"$sum": bson.M{
 						"$cond": bson.M{
-							"if": "$success",
+							"if":   "$success",
 							"then": 0,
 							"else": 1,
 						},
@@ -152,15 +155,15 @@ func (r *usageRepository) GetServiceUserStats(ctx context.Context, serviceName s
 		{
 			"$group": bson.M{
 				"_id": bson.M{
-					"user_id": "$user_id",
+					"user_id":      "$user_id",
 					"service_name": "$service_name",
 				},
-				"email": bson.M{"$first": "$email"},
+				"email":       bson.M{"$first": "$email"},
 				"total_calls": bson.M{"$sum": 1},
 				"success_calls": bson.M{
 					"$sum": bson.M{
 						"$cond": bson.M{
-							"if": "$success",
+							"if":   "$success",
 							"then": 1,
 							"else": 0,
 						},
@@ -169,27 +172,27 @@ func (r *usageRepository) GetServiceUserStats(ctx context.Context, serviceName s
 				"failed_calls": bson.M{
 					"$sum": bson.M{
 						"$cond": bson.M{
-							"if": "$success",
+							"if":   "$success",
 							"then": 0,
 							"else": 1,
 						},
 					},
 				},
 				"total_credits": bson.M{"$sum": "$credits_used"},
-				"last_used": bson.M{"$max": "$created_at"},
+				"last_used":     bson.M{"$max": "$created_at"},
 			},
 		},
 		{
 			"$project": bson.M{
-				"user_id": "$_id.user_id",
-				"email": 1,
-				"service_name": "$_id.service_name",
-				"total_calls": 1,
+				"user_id":       "$_id.user_id",
+				"email":         1,
+				"service_name":  "$_id.service_name",
+				"total_calls":   1,
 				"success_calls": 1,
-				"failed_calls": 1,
+				"failed_calls":  1,
 				"total_credits": 1,
-				"last_used": 1,
-				"_id": 0,
+				"last_used":     1,
+				"_id":           0,
 			},
 		},
 		{
@@ -211,8 +214,9 @@ func (r *usageRepository) GetServiceUserStats(ctx context.Context, serviceName s
 	return stats, nil
 }
 
-func (r *usageRepository) GetUserUsageHistory(ctx context.Context, userID string, limit, skip int) ([]models.ServiceUsage, error) {
+func (r *usageRepository) GetUserUsageHistory(ctx context.Context, userID string, startDate, endDate *time.Time, limit, skip int) ([]models.ServiceUsage, error) {
 	filter := bson.M{"user_id": userID}
+	r.applyDateFilter(filter, startDate, endDate)
 	opts := options.Find().
 		SetSort(bson.D{{Key: "created_at", Value: -1}}).
 		SetLimit(int64(limit)).
@@ -232,8 +236,9 @@ func (r *usageRepository) GetUserUsageHistory(ctx context.Context, userID string
 	return usage, nil
 }
 
-func (r *usageRepository) GetServiceUsageHistory(ctx context.Context, serviceName string, limit, skip int) ([]models.ServiceUsage, error) {
+func (r *usageRepository) GetServiceUsageHistory(ctx context.Context, serviceName string, startDate, endDate *time.Time, limit, skip int) ([]models.ServiceUsage, error) {
 	filter := bson.M{"service_name": serviceName}
+	r.applyDateFilter(filter, startDate, endDate)
 	opts := options.Find().
 		SetSort(bson.D{{Key: "created_at", Value: -1}}).
 		SetLimit(int64(limit)).
@@ -251,11 +256,45 @@ func (r *usageRepository) GetServiceUsageHistory(ctx context.Context, serviceNam
 	}
 
 	return usage, nil
+}
+
+func (r *usageRepository) GetAllUsageHistory(ctx context.Context, startDate, endDate *time.Time, limit, skip int) ([]models.ServiceUsage, error) {
+	filter := bson.M{}
+	r.applyDateFilter(filter, startDate, endDate)
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetLimit(int64(limit)).
+		SetSkip(int64(skip))
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var usage []models.ServiceUsage
+	if err = cursor.All(ctx, &usage); err != nil {
+		return nil, err
+	}
+
+	return usage, nil
+}
+
+func (r *usageRepository) CountUsageHistory(ctx context.Context, startDate, endDate *time.Time) (int64, error) {
+	filter := bson.M{}
+	r.applyDateFilter(filter, startDate, endDate)
+	return r.collection.CountDocuments(ctx, filter)
+}
+
+func (r *usageRepository) CountServiceUsageHistory(ctx context.Context, serviceName string, startDate, endDate *time.Time) (int64, error) {
+	filter := bson.M{"service_name": serviceName}
+	r.applyDateFilter(filter, startDate, endDate)
+	return r.collection.CountDocuments(ctx, filter)
 }
 
 func (r *usageRepository) buildDateFilter(startDate, endDate *time.Time) bson.M {
 	filter := bson.M{}
-	
+
 	if startDate != nil || endDate != nil {
 		dateFilter := bson.M{}
 		if startDate != nil {
@@ -266,6 +305,13 @@ func (r *usageRepository) buildDateFilter(startDate, endDate *time.Time) bson.M 
 		}
 		filter["created_at"] = dateFilter
 	}
-	
+
 	return filter
+}
+
+func (r *usageRepository) applyDateFilter(filter bson.M, startDate, endDate *time.Time) {
+	dateFilter := r.buildDateFilter(startDate, endDate)
+	for key, value := range dateFilter {
+		filter[key] = value
+	}
 }

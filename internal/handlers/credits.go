@@ -14,12 +14,14 @@ import (
 type CreditsHandler struct {
 	creditsService services.CreditsService
 	userService    services.UserService
+	adminService   services.AdminService
 }
 
-func NewCreditsHandler(creditsService services.CreditsService, userService services.UserService) *CreditsHandler {
+func NewCreditsHandler(creditsService services.CreditsService, userService services.UserService, adminService services.AdminService) *CreditsHandler {
 	return &CreditsHandler{
 		creditsService: creditsService,
 		userService:    userService,
+		adminService:   adminService,
 	}
 }
 
@@ -45,7 +47,7 @@ func (h *CreditsHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 				UserID: email, // Use email as user_id for Kinde users
 				Email:  email,
 			}
-			
+
 			_, createErr := h.userService.RegisterUser(r.Context(), registerReq)
 			if createErr != nil {
 				utils.SendErrorResponse(w, apperrors.NewAppError(
@@ -94,6 +96,19 @@ func (h *CreditsHandler) AddCredits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok && h.adminService != nil {
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "add_credits",
+			TargetType: "user",
+			TargetID:   req.UserID,
+			Outcome:    "success",
+			Metadata: map[string]interface{}{
+				"amount": req.Amount,
+			},
+		})
+	}
+
 	utils.SendJSONResponse(w, http.StatusOK, response)
 }
 
@@ -108,6 +123,21 @@ func (h *CreditsHandler) DeductCredits(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
+	}
+
+	if middleware.IsAdminFromContext(r.Context()) && h.adminService != nil {
+		if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok {
+			_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+				ActorEmail: actorEmail,
+				Action:     "deduct_credits",
+				TargetType: "user",
+				TargetID:   req.UserID,
+				Outcome:    "success",
+				Metadata: map[string]interface{}{
+					"amount": req.Amount,
+				},
+			})
+		}
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, response)

@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -13,6 +16,8 @@ import (
 type fakeRazorpayGateway struct {
 	cancelCalls []cancelCall
 	cancelErr   error
+	fetchResult map[string]interface{}
+	fetchErr    error
 }
 
 type cancelCall struct {
@@ -47,6 +52,22 @@ func (f *fakeRazorpayGateway) CancelSubscription(subscriptionID string, data map
 	}
 
 	return map[string]interface{}{"id": subscriptionID}, nil
+}
+
+func (f *fakeRazorpayGateway) FetchSubscription(subscriptionID string) (map[string]interface{}, error) {
+	if f.fetchErr != nil {
+		return nil, f.fetchErr
+	}
+	if f.fetchResult != nil {
+		return f.fetchResult, nil
+	}
+	return map[string]interface{}{
+		"id":                  subscriptionID,
+		"status":              "active",
+		"cancel_at_cycle_end": false,
+		"current_start":       float64(time.Now().AddDate(0, -1, 0).Unix()),
+		"current_end":         float64(time.Now().AddDate(0, 0, 15).Unix()),
+	}, nil
 }
 
 type fakeEmailService struct {
@@ -140,6 +161,40 @@ func (r *fakeSubscriptionRepo) GetBySubscriptionID(ctx context.Context, subID st
 	}
 	copied := *sub
 	return &copied, nil
+}
+
+func (r *fakeSubscriptionRepo) List(ctx context.Context, query models.AdminSubscriptionQuery) ([]models.Subscription, int64, error) {
+	result := make([]models.Subscription, 0)
+	for _, sub := range r.subs {
+		matches := true
+		if query.Status != "" && string(sub.Status) != query.Status {
+			matches = false
+		}
+		if matches && query.UserID != "" && sub.UserID != query.UserID {
+			matches = false
+		}
+		if matches && query.Email != "" && sub.Email != query.Email {
+			matches = false
+		}
+		if matches && query.PlanID != "" && sub.PlanID != query.PlanID {
+			matches = false
+		}
+		if matches && query.SubscriptionID != "" && !strings.Contains(sub.SubscriptionID, query.SubscriptionID) {
+			matches = false
+		}
+		if matches && query.Search != "" {
+			needle := strings.ToLower(query.Search)
+			matches = strings.Contains(strings.ToLower(sub.UserID), needle) ||
+				strings.Contains(strings.ToLower(sub.Email), needle) ||
+				strings.Contains(strings.ToLower(sub.PlanID), needle) ||
+				strings.Contains(strings.ToLower(sub.SubscriptionID), needle) ||
+				strings.Contains(strings.ToLower(string(sub.Status)), needle)
+		}
+		if matches {
+			result = append(result, *sub)
+		}
+	}
+	return result, int64(len(result)), nil
 }
 
 func (r *fakeSubscriptionRepo) Update(ctx context.Context, sub *models.Subscription) error {
@@ -258,6 +313,77 @@ func TestCancelSubscriptionRejectsInactiveSubscriptions(t *testing.T) {
 	}
 }
 
+func TestReconcileAdminSubscriptionUpdatesLocalState(t *testing.T) {
+	now := time.Now().UTC()
+	repo := newFakeSubscriptionRepo(&models.Subscription{
+		SubscriptionID:     "sub_789",
+		UserID:             "user@example.com",
+		Email:              "user@example.com",
+		Status:             models.SubscriptionStatusCreated,
+		PlanID:             "pro",
+		Amount:             19900,
+		Currency:           "USD",
+		CurrentPeriodStart: now.AddDate(0, -1, 0),
+		CurrentPeriodEnd:   now.AddDate(0, 0, 5),
+		CreatedAt:          now.AddDate(0, -1, 0),
+		UpdatedAt:          now,
+	})
+	gateway := &fakeRazorpayGateway{
+		fetchResult: map[string]interface{}{
+			"id":                  "sub_789",
+			"status":              "active",
+			"cancel_at_cycle_end": 1,
+			"current_start":       float64(now.AddDate(0, -1, 0).Unix()),
+			"current_end":         float64(now.AddDate(0, 0, 20).Unix()),
+		},
+	}
+	svc := &subscriptionService{
+		subRepo:     repo,
+		razorpay:    gateway,
+		planService: &fakePlanService{},
+	}
+
+	resp, err := svc.ReconcileAdminSubscription(context.Background(), "sub_789")
+	if err != nil {
+		t.Fatalf("reconcile returned error: %v", err)
+	}
+	if resp.Subscription.Status != models.SubscriptionStatusActive {
+		t.Fatalf("expected active status, got %s", resp.Subscription.Status)
+	}
+	if !resp.Subscription.CancelAtCycleEnd {
+		t.Fatalf("expected cancel_at_cycle_end to be true")
+	}
+	if resp.Subscription.CurrentPeriodEnd.Before(now.AddDate(0, 0, 19)) {
+		t.Fatalf("expected reconciled current period end to move forward")
+	}
+}
+
+type fakePlanService struct{}
+
+func (f *fakePlanService) CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error) {
+	return &models.Plan{}, nil
+}
+
+func (f *fakePlanService) GetActivePlans(ctx context.Context) ([]models.Plan, error) {
+	return nil, nil
+}
+
+func (f *fakePlanService) GetPlanByID(ctx context.Context, planID string) (*models.Plan, error) {
+	return &models.Plan{PlanID: planID, Name: "Pro", RazorpayPlanID: "rp_pro"}, nil
+}
+
+func (f *fakePlanService) GetAllPlans(ctx context.Context) ([]models.Plan, error) {
+	return []models.Plan{{PlanID: "pro", Name: "Pro", RazorpayPlanID: "rp_pro"}}, nil
+}
+
+func (f *fakePlanService) UpdatePlan(ctx context.Context, planID string, req *models.UpdatePlanRequest) error {
+	return nil
+}
+
+func (f *fakePlanService) DeletePlan(ctx context.Context, planID string) error {
+	return nil
+}
+
 func TestWebhookSubscriptionCancelledMarksFinalState(t *testing.T) {
 	now := time.Now().UTC()
 	repo := newFakeSubscriptionRepo(&models.Subscription{
@@ -309,4 +435,92 @@ func TestWebhookSubscriptionCancelledMarksFinalState(t *testing.T) {
 	if emailSvc.cancellationCalls[0].accessUntil.IsZero() {
 		t.Fatalf("expected access until date in cancellation email")
 	}
+}
+
+func TestWebhookRawRejectsMissingSignature(t *testing.T) {
+	svc := &subscriptionService{
+		webhookSecret: "whsec_test",
+	}
+
+	err := svc.HandleWebhookRaw(context.Background(), []byte(`{"event":"subscription.cancelled","payload":{}}`), "")
+	if err == nil {
+		t.Fatal("expected error for missing signature")
+	}
+	if !strings.Contains(err.Error(), "missing webhook signature") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWebhookRawRejectsInvalidSignature(t *testing.T) {
+	svc := &subscriptionService{
+		webhookSecret: "whsec_test",
+	}
+
+	err := svc.HandleWebhookRaw(context.Background(), []byte(`{"event":"subscription.cancelled","payload":{}}`), "bad-signature")
+	if err == nil {
+		t.Fatal("expected error for invalid signature")
+	}
+	if !strings.Contains(err.Error(), "invalid webhook signature") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWebhookRawAcceptsValidSignature(t *testing.T) {
+	now := time.Now().UTC()
+	repo := newFakeSubscriptionRepo(&models.Subscription{
+		SubscriptionID:     "sub_raw_1",
+		UserID:             "user@example.com",
+		Email:              "user@example.com",
+		Status:             models.SubscriptionStatusActive,
+		PlanID:             "pro",
+		Amount:             19900,
+		Currency:           "USD",
+		CurrentPeriodStart: now.AddDate(0, -1, 0),
+		CurrentPeriodEnd:   now.AddDate(0, 0, 10),
+		CancelAtCycleEnd:   true,
+		CancelScheduledAt:  &now,
+		CreatedAt:          now.AddDate(0, -1, 0),
+		UpdatedAt:          now,
+	})
+	emailSvc := &fakeEmailService{}
+	svc := &subscriptionService{
+		subRepo:        repo,
+		razorpay:       &fakeRazorpayGateway{},
+		planService:    &fakePlanService{},
+		emailService:   emailSvc,
+		webhookSecret:  "whsec_test",
+		creditsService: &fakeCreditsService{},
+	}
+
+	rawPayload := []byte(`{"event":"subscription.cancelled","payload":{"subscription":{"entity":{"id":"sub_raw_1"}}}}`)
+	mac := hmac.New(sha256.New, []byte("whsec_test"))
+	mac.Write(rawPayload)
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	if err := svc.HandleWebhookRaw(context.Background(), rawPayload, signature); err != nil {
+		t.Fatalf("handle webhook raw returned error: %v", err)
+	}
+
+	updated := repo.subs["sub_raw_1"]
+	if updated.Status != models.SubscriptionStatusCancelled {
+		t.Fatalf("expected status cancelled, got %s", updated.Status)
+	}
+}
+
+type fakeCreditsService struct{}
+
+func (f *fakeCreditsService) AddCredits(ctx context.Context, req *models.AddCreditsRequest) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: req.UserID, Credits: req.Amount}, nil
+}
+
+func (f *fakeCreditsService) GetBalanceByEmail(ctx context.Context, email string) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: email, Credits: 0}, nil
+}
+
+func (f *fakeCreditsService) DeductCredits(ctx context.Context, req *models.DeductCreditsRequest) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: req.UserID, Credits: 0}, nil
+}
+
+func (f *fakeCreditsService) GetBalance(ctx context.Context, userID string) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: userID, Credits: 0}, nil
 }

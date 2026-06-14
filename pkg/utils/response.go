@@ -46,8 +46,6 @@ func SendJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 		log.Printf("Error writing response: %v", writeErr)
 	}
 	
-	// Log successful response
-	log.Printf("Response sent successfully: status=%d, size=%d bytes", statusCode, len(jsonData))
 }
 
 // SendErrorResponse sends an enhanced error response with user-friendly messaging
@@ -56,9 +54,6 @@ func SendErrorResponse(w http.ResponseWriter, err error) {
 	
 	// Check if it's our enhanced AppError
 	if appErr, ok := err.(*apperrors.AppError); ok {
-		// Log for debugging
-		log.Printf("Sending enhanced error response: %+v", appErr)
-		
 		// Clean up the original response if it exists
 		var cleanedOriginalResponse interface{}
 		if appErr.OriginalResponse != nil {
@@ -74,13 +69,6 @@ func SendErrorResponse(w http.ResponseWriter, err error) {
 			ErrorCode:        appErr.ErrorCode,
 			OriginalResponse: cleanedOriginalResponse,
 		}
-		
-		// Log the response being sent (with truncated original response for readability)
-		logResponse := response
-		if cleanedOriginalResponse != nil {
-			logResponse.OriginalResponse = "[ORIGINAL_RESPONSE_PRESENT]"
-		}
-		log.Printf("Enhanced error response being sent: %+v", logResponse)
 		
 		SendJSONResponse(w, statusCode, response)
 		return

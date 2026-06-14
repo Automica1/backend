@@ -4,6 +4,7 @@ package services
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"chi-mongo-backend/internal/models"
@@ -17,10 +18,14 @@ type UserService interface {
 	GetOrCreateUser(ctx context.Context, email string) (*models.User, error)
 	// Add these new admin methods
 	GetAllUsers(ctx context.Context) (*models.AdminUserListResponse, error)
+	ListUsers(ctx context.Context, query models.AdminListQuery) (*models.AdminUserListResponse, error)
 	GetUserByID(ctx context.Context, userID string) (*models.AdminUserDetailResponse, error)
 	GetUserStats(ctx context.Context) (*models.UserStatsResponse, error)
 	GetUserActivity(ctx context.Context, userID string) (*models.UserActivityResponse, error)
 	GetUserCredits(ctx context.Context, userID string) (*models.UserCreditsResponse, error)
+	DeleteUser(ctx context.Context, userID string) error
+	SuspendUser(ctx context.Context, userID string) error
+	ReactivateUser(ctx context.Context, userID string) error
 }
 
 type userService struct {
@@ -49,7 +54,7 @@ func (s *userService) RegisterUser(ctx context.Context, req *models.RegisterUser
 		// User exists, return error
 		return nil, apperrors.NewUserAlreadyExistsError()
 	}
-	
+
 	// Check if the error is something other than "user not found"
 	if !apperrors.IsErrorType(err, apperrors.ErrUserNotFound) {
 		// Some other error occurred (database error, etc.)
@@ -61,6 +66,7 @@ func (s *userService) RegisterUser(ctx context.Context, req *models.RegisterUser
 	user := &models.User{
 		UserID:    req.UserID,
 		Email:     req.Email,
+		IsActive:  true,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -118,6 +124,7 @@ func (s *userService) GetOrCreateUser(ctx context.Context, email string) (*model
 	newUser := &models.User{
 		UserID:    userID,
 		Email:     email,
+		IsActive:  true,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -147,16 +154,49 @@ func (s *userService) GetOrCreateUser(ctx context.Context, email string) (*model
 // Admin methods
 
 func (s *userService) GetAllUsers(ctx context.Context) (*models.AdminUserListResponse, error) {
-	// Get users with their credits using aggregation
+	return s.ListUsers(ctx, models.AdminListQuery{Limit: 100000, Skip: 0})
+}
+
+func (s *userService) ListUsers(ctx context.Context, query models.AdminListQuery) (*models.AdminUserListResponse, error) {
 	adminUsers, err := s.creditsRepo.GetAllWithUsers(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	if query.Search != "" {
+		filtered := make([]models.AdminUser, 0, len(adminUsers))
+		search := strings.ToLower(strings.TrimSpace(query.Search))
+		for _, user := range adminUsers {
+			if strings.Contains(strings.ToLower(user.Email), search) || strings.Contains(strings.ToLower(user.UserID), search) {
+				filtered = append(filtered, user)
+			}
+		}
+		adminUsers = filtered
+	}
+
+	total := len(adminUsers)
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	skip := query.Skip
+	if skip < 0 {
+		skip = 0
+	}
+	end := skip + limit
+	if skip > total {
+		adminUsers = []models.AdminUser{}
+	} else {
+		if end > total {
+			end = total
+		}
+		adminUsers = adminUsers[skip:end]
+	}
+
 	return &models.AdminUserListResponse{
 		Message: "Users retrieved successfully",
 		Users:   adminUsers,
-		Total:   len(adminUsers),
+		Total:   total,
 	}, nil
 }
 
@@ -178,6 +218,7 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*models.A
 		ID:        user.ID,
 		UserID:    user.UserID,
 		Email:     user.Email,
+		IsActive:  user.IsActive,
 		Credits:   credits.Credits,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
@@ -254,4 +295,36 @@ func (s *userService) GetUserCredits(ctx context.Context, userID string) (*model
 		UserID:  userID,
 		Credits: credits.Credits,
 	}, nil
+}
+
+func (s *userService) DeleteUser(ctx context.Context, userID string) error {
+	// Ensure the user exists before deleting anything else.
+	if _, err := s.userRepo.GetByUserID(ctx, userID); err != nil {
+		return err
+	}
+
+	// Best-effort cascade across user-owned collections.
+	if err := s.activityRepo.DeleteByUserID(ctx, userID); err != nil {
+		return err
+	}
+
+	if err := s.creditsRepo.DeleteByUserID(ctx, userID); err != nil {
+		return err
+	}
+
+	return s.userRepo.Delete(ctx, userID)
+}
+
+func (s *userService) SuspendUser(ctx context.Context, userID string) error {
+	if _, err := s.userRepo.GetByUserID(ctx, userID); err != nil {
+		return err
+	}
+	return s.userRepo.UpdateActiveStatus(ctx, userID, false)
+}
+
+func (s *userService) ReactivateUser(ctx context.Context, userID string) error {
+	if _, err := s.userRepo.GetByUserID(ctx, userID); err != nil {
+		return err
+	}
+	return s.userRepo.UpdateActiveStatus(ctx, userID, true)
 }

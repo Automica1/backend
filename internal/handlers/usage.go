@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"time"
 
+	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
-	"chi-mongo-backend/pkg/utils"
 	apperrors "chi-mongo-backend/pkg/errors"
+	"chi-mongo-backend/pkg/utils"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -24,7 +25,7 @@ func NewUsageHandler(usageService services.UsageService) *UsageHandler {
 
 func (h *UsageHandler) GetGlobalStats(w http.ResponseWriter, r *http.Request) {
 	startDate, endDate := h.parseDateRange(r)
-	
+
 	stats, err := h.usageService.GetGlobalStats(r.Context(), startDate, endDate)
 	if err != nil {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
@@ -36,18 +37,18 @@ func (h *UsageHandler) GetGlobalStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
-		"stats": stats,
+		"stats":          stats,
 		"total_services": len(stats),
 		"date_range": map[string]interface{}{
 			"start_date": startDate,
-			"end_date": endDate,
+			"end_date":   endDate,
 		},
 	})
 }
 
 func (h *UsageHandler) GetUserStats(w http.ResponseWriter, r *http.Request) {
 	startDate, endDate := h.parseDateRange(r)
-	
+
 	stats, err := h.usageService.GetUserStats(r.Context(), startDate, endDate)
 	if err != nil {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
@@ -59,11 +60,11 @@ func (h *UsageHandler) GetUserStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
-		"stats": stats,
+		"stats":       stats,
 		"total_users": len(stats),
 		"date_range": map[string]interface{}{
 			"start_date": startDate,
-			"end_date": endDate,
+			"end_date":   endDate,
 		},
 	})
 }
@@ -71,7 +72,7 @@ func (h *UsageHandler) GetUserStats(w http.ResponseWriter, r *http.Request) {
 func (h *UsageHandler) GetServiceUserStats(w http.ResponseWriter, r *http.Request) {
 	serviceName := r.URL.Query().Get("service")
 	startDate, endDate := h.parseDateRange(r)
-	
+
 	stats, err := h.usageService.GetServiceUserStats(r.Context(), serviceName, startDate, endDate)
 	if err != nil {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
@@ -83,12 +84,12 @@ func (h *UsageHandler) GetServiceUserStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
-		"stats": stats,
-		"service": serviceName,
+		"stats":         stats,
+		"service":       serviceName,
 		"total_records": len(stats),
 		"date_range": map[string]interface{}{
 			"start_date": startDate,
-			"end_date": endDate,
+			"end_date":   endDate,
 		},
 	})
 }
@@ -106,8 +107,8 @@ func (h *UsageHandler) GetUserUsageHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Parse pagination parameters
-	limit := h.parseIntQuery(r, "limit", 50)   // Default 50
-	skip := h.parseIntQuery(r, "skip", 0)      // Default 0
+	limit := h.parseIntQuery(r, "limit", 50) // Default 50
+	skip := h.parseIntQuery(r, "skip", 0)    // Default 0
 
 	// Validate pagination parameters
 	if limit > 1000 {
@@ -120,7 +121,9 @@ func (h *UsageHandler) GetUserUsageHistory(w http.ResponseWriter, r *http.Reques
 		skip = 0
 	}
 
-	usage, err := h.usageService.GetUserUsageHistory(r.Context(), userID, limit, skip)
+	startDate, endDate := h.parseDateRange(r)
+
+	usage, err := h.usageService.GetUserUsageHistory(r.Context(), userID, startDate, endDate, limit, skip)
 	if err != nil {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrInternalServer,
@@ -131,12 +134,12 @@ func (h *UsageHandler) GetUserUsageHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
-		"user_id": userID,
+		"user_id":       userID,
 		"usage_history": usage,
 		"total_records": len(usage),
 		"pagination": map[string]interface{}{
 			"limit": limit,
-			"skip": skip,
+			"skip":  skip,
 		},
 	})
 }
@@ -144,18 +147,10 @@ func (h *UsageHandler) GetUserUsageHistory(w http.ResponseWriter, r *http.Reques
 // NEW: GetServiceUsageHistory method
 func (h *UsageHandler) GetServiceUsageHistory(w http.ResponseWriter, r *http.Request) {
 	serviceName := chi.URLParam(r, "serviceName")
-	if serviceName == "" {
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrValidation,
-			http.StatusBadRequest,
-			"service name is required",
-		))
-		return
-	}
-
+	startDate, endDate := h.parseDateRange(r)
 	// Parse pagination parameters
-	limit := h.parseIntQuery(r, "limit", 50)   // Default 50
-	skip := h.parseIntQuery(r, "skip", 0)      // Default 0
+	limit := h.parseIntQuery(r, "limit", 50) // Default 50
+	skip := h.parseIntQuery(r, "skip", 0)    // Default 0
 
 	// Validate pagination parameters
 	if limit > 1000 {
@@ -168,7 +163,17 @@ func (h *UsageHandler) GetServiceUsageHistory(w http.ResponseWriter, r *http.Req
 		skip = 0
 	}
 
-	usage, err := h.usageService.GetServiceUsageHistory(r.Context(), serviceName, limit, skip)
+	var (
+		usage        []models.ServiceUsage
+		err          error
+		totalRecords int64
+	)
+
+	if serviceName == "" {
+		usage, err = h.usageService.GetAllUsageHistory(r.Context(), startDate, endDate, limit, skip)
+	} else {
+		usage, err = h.usageService.GetServiceUsageHistory(r.Context(), serviceName, startDate, endDate, limit, skip)
+	}
 	if err != nil {
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrInternalServer,
@@ -178,13 +183,26 @@ func (h *UsageHandler) GetServiceUsageHistory(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if serviceName == "" {
+		if count, countErr := h.usageService.CountUsageHistory(r.Context(), startDate, endDate); countErr == nil {
+			totalRecords = count
+		}
+	} else {
+		if count, countErr := h.usageService.CountServiceUsageHistory(r.Context(), serviceName, startDate, endDate); countErr == nil {
+			totalRecords = count
+		}
+	}
+	if totalRecords == 0 {
+		totalRecords = int64(len(usage))
+	}
+
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
-		"service_name": serviceName,
+		"service_name":  serviceName,
 		"usage_history": usage,
-		"total_records": len(usage),
+		"total_records": totalRecords,
 		"pagination": map[string]interface{}{
 			"limit": limit,
-			"skip": skip,
+			"skip":  skip,
 		},
 	})
 }
@@ -192,13 +210,13 @@ func (h *UsageHandler) GetServiceUsageHistory(w http.ResponseWriter, r *http.Req
 // Helper method to parse date range from query parameters
 func (h *UsageHandler) parseDateRange(r *http.Request) (*time.Time, *time.Time) {
 	var startDate, endDate *time.Time
-	
+
 	if startStr := r.URL.Query().Get("start_date"); startStr != "" {
 		if parsed, err := time.Parse("2006-01-02", startStr); err == nil {
 			startDate = &parsed
 		}
 	}
-	
+
 	if endStr := r.URL.Query().Get("end_date"); endStr != "" {
 		if parsed, err := time.Parse("2006-01-02", endStr); err == nil {
 			// Add 23:59:59 to include the entire end date
@@ -206,7 +224,7 @@ func (h *UsageHandler) parseDateRange(r *http.Request) (*time.Time, *time.Time) 
 			endDate = &endTime
 		}
 	}
-	
+
 	return startDate, endDate
 }
 

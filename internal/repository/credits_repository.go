@@ -92,6 +92,11 @@ func (r *creditsRepository) DeductCredits(ctx context.Context, userID string, am
 	return r.UpdateCredits(ctx, userID, -amount)
 }
 
+func (r *creditsRepository) DeleteByUserID(ctx context.Context, userID string) error {
+	_, err := r.collection.DeleteOne(ctx, bson.M{"userId": userID})
+	return err
+}
+
 func (r *creditsRepository) GetTotalCredits(ctx context.Context) (int64, error) {
 	pipeline := []bson.M{
 		{
@@ -140,10 +145,14 @@ func (r *creditsRepository) GetAllWithUsers(ctx context.Context) ([]models.Admin
 				"_id":       "$userInfo._id",
 				"userId":    "$userId",
 				"email":     "$userInfo.email",
+				"isActive":  "$userInfo.isActive",
 				"credits":   "$credits",
 				"createdAt": "$userInfo.createdAt",
 				"updatedAt": "$userInfo.updatedAt",
 			},
+		},
+		{
+			"$sort": bson.M{"createdAt": -1},
 		},
 	}
 

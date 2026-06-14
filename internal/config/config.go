@@ -15,6 +15,7 @@ type Config struct {
 	Auth     AuthConfig
 	Razorpay RazorpayConfig
 	Email    EmailConfig
+	Logs     LogsConfig
 }
 
 type RazorpayConfig struct {
@@ -27,6 +28,13 @@ type EmailConfig struct {
 	FromEmail string
 	FromName  string
 	Password  string
+}
+
+type LogsConfig struct {
+	AccessPath      string
+	ErrorPath       string
+	NginxAccessPath string
+	NginxErrorPath  string
 }
 
 type ServerConfig struct {
@@ -68,6 +76,12 @@ func Load() (*Config, error) {
 			FromEmail: getEnvOrDefault("GMAIL_FROM_EMAIL", "automicaai@gmail.com"),
 			FromName:  getEnvOrDefault("GMAIL_FROM_NAME", "Automica"),
 			Password:  os.Getenv("GMAIL_APP_PASSWORD"),
+		},
+		Logs: LogsConfig{
+			AccessPath:      getEnvOrDefault("BACKEND_ACCESS_LOG_PATH", "/home/ec2-user/.pm2/logs/automica-backend-out.log"),
+			ErrorPath:       getEnvOrDefault("BACKEND_ERROR_LOG_PATH", "/home/ec2-user/.pm2/logs/automica-backend-error.log"),
+			NginxAccessPath: getEnvOrDefault("NGINX_ACCESS_LOG_PATH", "/home/ec2-user/.pm2/logs/automica-nginx-access.log"),
+			NginxErrorPath:  getEnvOrDefault("NGINX_ERROR_LOG_PATH", "/home/ec2-user/.pm2/logs/automica-nginx-error.log"),
 		},
 	}
 

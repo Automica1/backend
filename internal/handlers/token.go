@@ -2,7 +2,13 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/csv"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"chi-mongo-backend/internal/middleware"
 	"chi-mongo-backend/internal/models"
@@ -17,13 +23,15 @@ type TokenHandler struct {
 	tokenService   services.CreditTokenService
 	creditsService services.CreditsService
 	userService    services.UserService
+	adminService   services.AdminService
 }
 
-func NewTokenHandler(tokenService services.CreditTokenService, creditsService services.CreditsService, userService services.UserService) *TokenHandler {
+func NewTokenHandler(tokenService services.CreditTokenService, creditsService services.CreditsService, userService services.UserService, adminService services.AdminService) *TokenHandler {
 	return &TokenHandler{
 		tokenService:   tokenService,
 		creditsService: creditsService,
 		userService:    userService,
+		adminService:   adminService,
 	}
 }
 
@@ -61,6 +69,20 @@ func (h *TokenHandler) GenerateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok && h.adminService != nil {
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "generate_token",
+			TargetType: "token",
+			TargetID:   response.Token,
+			Outcome:    "success",
+			Metadata: map[string]interface{}{
+				"credits":     req.Credits,
+				"description": req.Description,
+			},
+		})
+	}
+
 	utils.SendJSONResponse(w, http.StatusCreated, response)
 }
 
@@ -91,7 +113,7 @@ func (h *TokenHandler) RedeemToken(w http.ResponseWriter, r *http.Request) {
 				UserID: email,
 				Email:  email,
 			}
-			
+
 			_, createErr := h.userService.RegisterUser(r.Context(), registerReq)
 			if createErr != nil {
 				utils.SendErrorResponse(w, apperrors.NewAppError(
@@ -101,7 +123,7 @@ func (h *TokenHandler) RedeemToken(w http.ResponseWriter, r *http.Request) {
 				))
 				return
 			}
-			
+
 			// After successful creation, fetch the user again
 			user, err = h.userService.GetUserByEmail(r.Context(), email)
 			if err != nil {
@@ -173,7 +195,17 @@ func (h *TokenHandler) GetAllTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := h.tokenService.GetAllTokens(r.Context())
+	limit := parseAdminIntQuery(r, "limit", 25)
+	skip := parseAdminIntQuery(r, "skip", 0)
+	search := r.URL.Query().Get("search")
+	status := r.URL.Query().Get("status")
+
+	tokens, total, err := h.tokenService.ListTokens(r.Context(), models.AdminListQuery{
+		Limit:  limit,
+		Skip:   skip,
+		Search: search,
+		Status: status,
+	})
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
@@ -181,8 +213,10 @@ func (h *TokenHandler) GetAllTokens(w http.ResponseWriter, r *http.Request) {
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
 		"message": "All tokens retrieved successfully",
-		"count":   len(tokens),
+		"count":   total,
 		"tokens":  tokens,
+		"limit":   limit,
+		"skip":    skip,
 	})
 }
 
@@ -198,7 +232,9 @@ func (h *TokenHandler) GetUsedTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := h.tokenService.GetTokensByStatus(r.Context(), true) // true = used tokens
+	limit := parseAdminIntQuery(r, "limit", 25)
+	skip := parseAdminIntQuery(r, "skip", 0)
+	tokens, total, err := h.tokenService.ListTokens(r.Context(), models.AdminListQuery{Limit: limit, Skip: skip, Status: "used"})
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
@@ -206,8 +242,10 @@ func (h *TokenHandler) GetUsedTokens(w http.ResponseWriter, r *http.Request) {
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
 		"message": "Used tokens retrieved successfully",
-		"count":   len(tokens),
+		"count":   total,
 		"tokens":  tokens,
+		"limit":   limit,
+		"skip":    skip,
 	})
 }
 
@@ -223,7 +261,9 @@ func (h *TokenHandler) GetUnusedTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := h.tokenService.GetTokensByStatus(r.Context(), false) // false = unused tokens
+	limit := parseAdminIntQuery(r, "limit", 25)
+	skip := parseAdminIntQuery(r, "skip", 0)
+	tokens, total, err := h.tokenService.ListTokens(r.Context(), models.AdminListQuery{Limit: limit, Skip: skip, Status: "unused"})
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
@@ -231,8 +271,10 @@ func (h *TokenHandler) GetUnusedTokens(w http.ResponseWriter, r *http.Request) {
 
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
 		"message": "Unused tokens retrieved successfully",
-		"count":   len(tokens),
+		"count":   total,
 		"tokens":  tokens,
+		"limit":   limit,
+		"skip":    skip,
 	})
 }
 
@@ -275,5 +317,119 @@ func (h *TokenHandler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if actorEmail, ok := middleware.GetEmailFromContext(r.Context()); ok && h.adminService != nil {
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "delete_token",
+			TargetType: "token",
+			TargetID:   tokenID,
+			Outcome:    "success",
+			Metadata: map[string]interface{}{
+				"description": response.Description,
+				"credits":     response.Credits,
+			},
+		})
+	}
+
 	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
+func (h *TokenHandler) ExportTokensCSV(w http.ResponseWriter, r *http.Request) {
+	if !middleware.IsAdminFromContext(r.Context()) {
+		utils.SendErrorResponse(w, apperrors.NewAppError(
+			apperrors.ErrForbidden,
+			http.StatusForbidden,
+			"admin access required",
+		))
+		return
+	}
+
+	scope := r.URL.Query().Get("scope")
+	var (
+		tokens []*models.CreditToken
+		err    error
+	)
+
+	if scope == "my" {
+		email, ok := middleware.GetEmailFromContext(r.Context())
+		if !ok {
+			utils.SendErrorResponse(w, apperrors.NewAppError(
+				apperrors.ErrUnauthorized,
+				http.StatusUnauthorized,
+				"email not found in context",
+			))
+			return
+		}
+		tokens, err = h.tokenService.GetTokensByCreatedBy(r.Context(), email)
+		if err == nil {
+			search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+			if search != "" {
+				filtered := make([]*models.CreditToken, 0, len(tokens))
+				for _, token := range tokens {
+					if strings.Contains(strings.ToLower(token.Token), search) ||
+						strings.Contains(strings.ToLower(token.Description), search) ||
+						strings.Contains(strings.ToLower(token.CreatedBy), search) {
+						filtered = append(filtered, token)
+					}
+				}
+				tokens = filtered
+			}
+		}
+	} else {
+		limit := parseAdminIntQuery(r, "limit", 100000)
+		skip := parseAdminIntQuery(r, "skip", 0)
+		search := r.URL.Query().Get("search")
+		status := r.URL.Query().Get("status")
+
+		tokens, _, err = h.tokenService.ListTokens(r.Context(), models.AdminListQuery{
+			Limit:  limit,
+			Skip:   skip,
+			Search: search,
+			Status: status,
+		})
+	}
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+	_ = writer.Write([]string{"Token", "Credits", "Created By", "Created At", "Expires At", "Used", "Used By", "Used At", "Description"})
+	for _, token := range tokens {
+		_ = writer.Write([]string{
+			token.Token,
+			strconv.Itoa(token.Credits),
+			token.CreatedBy,
+			token.CreatedAt.Format(time.RFC3339),
+			token.ExpiresAt.Format(time.RFC3339),
+			strconv.FormatBool(token.IsUsed),
+			token.UsedBy,
+			formatTokenTime(token.UsedAt),
+			token.Description,
+		})
+	}
+	writer.Flush()
+
+	filename := fmt.Sprintf("tokens-%s.csv", time.Now().Format("2006-01-02"))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func parseAdminIntQuery(r *http.Request, key string, defaultValue int) int {
+	if value := r.URL.Query().Get(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func formatTokenTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.Format(time.RFC3339)
 }

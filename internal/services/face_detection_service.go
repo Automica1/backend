@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
-	"log"
 
 	"chi-mongo-backend/internal/models"
 )
@@ -56,7 +56,7 @@ func (s *faceDetectionAPIService) ProcessFaceDetection(ctx context.Context, req 
 
 	// Log the request for debugging
 	log.Printf("Making Face Detection API request to: %s", s.apiURL)
-	log.Printf("Request payload: %s", string(jsonData))
+	log.Printf("Face Detection request ReqID=%s payload_bytes=%d", req.ReqID, len(jsonData))
 
 	// Make the API call
 	resp, err := s.httpClient.Do(httpReq)
@@ -73,14 +73,14 @@ func (s *faceDetectionAPIService) ProcessFaceDetection(ctx context.Context, req 
 
 	// Log the response for debugging
 	log.Printf("Face Detection API response status: %d", resp.StatusCode)
-	log.Printf("Face Detection API response body: %s", string(body))
+	log.Printf("Face Detection API response bytes: %d", len(body))
 
 	// Parse the response - exact format from API specification
 	var apiResponse struct {
-		ReqID        string    `json:"req_id"`
-		Success      bool      `json:"success"`
-		ErrorMessage *string   `json:"error_message"`
-		Data         []string  `json:"data"`
+		ReqID        string   `json:"req_id"`
+		Success      bool     `json:"success"`
+		ErrorMessage *string  `json:"error_message"`
+		Data         []string `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
@@ -119,7 +119,7 @@ func (s *faceDetectionAPIService) ProcessFaceDetection(ctx context.Context, req 
 
 	// Don't check HTTP status code here - let the handler deal with success/failure logic
 	// The API might return 400 with a structured error response, which is still valid
-	log.Printf("Face Detection API result: Success=%t, Status=%s, Message=%s, Faces=%d", 
+	log.Printf("Face Detection API result: Success=%t, Status=%s, Message=%s, Faces=%d",
 		result.Success, result.Status, result.Message, len(result.Data))
 
 	return result, nil
