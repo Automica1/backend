@@ -26,6 +26,7 @@ type Handlers struct {
 	Debug                 *handlers.DebugHandler
 	Token                 *handlers.TokenHandler
 	APIKey                *handlers.APIKeyHandler
+	BetaKey               *handlers.BetaKeyHandler
 	Usage                 *handlers.UsageHandler        // Add usage handler
 	Subscription          *handlers.SubscriptionHandler // Add subscription handler
 	Plan                  *handlers.PlanHandler         // Add plan handler
@@ -220,6 +221,14 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Put("/{planId}", h.Plan.UpdatePlan)
 					// DELETE deactivate plan
 					r.Delete("/{planId}", h.Plan.DeletePlan)
+				})
+
+				// Beta key management (Admin only)
+				r.Route("/beta-keys", func(r chi.Router) {
+					r.Get("/services", h.BetaKey.ListSupportedServices)
+					r.Get("/", h.BetaKey.ListBetaKeys)
+					r.Post("/", h.BetaKey.GenerateBetaKey)
+					r.Delete("/{keyId}", h.BetaKey.RevokeBetaKey)
 				})
 			})
 		})

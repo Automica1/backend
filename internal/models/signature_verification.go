@@ -8,8 +8,9 @@ import (
 
 // SignatureVerificationRequest represents the request payload for signature verification
 type SignatureVerificationRequest struct {
-	ReqID      string   `json:"req_id" bson:"req_id"`
-	DocBase64  []string `json:"doc_base64" bson:"doc_base64"`
+	ReqID     string   `json:"req_id" bson:"req_id"`
+	DocBase64 []string `json:"doc_base64" bson:"doc_base64"`
+	BetaKey   string   `json:"beta_key,omitempty" bson:"beta_key,omitempty"`
 }
 
 // Validate validates the signature verification request

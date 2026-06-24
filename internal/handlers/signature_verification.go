@@ -19,6 +19,7 @@ type SignatureVerificationHandler struct {
 	creditsService      services.CreditsService
 	userService         services.UserService
 	signatureAPIService services.SignatureVerificationAPIService
+	betaKeyService      services.BetaKeyService
 	usageService        services.UsageService
 	errorMapper         *apperrors.APIErrorMapper
 }
@@ -27,12 +28,14 @@ func NewSignatureVerificationHandler(
 	creditsService services.CreditsService,
 	userService services.UserService,
 	signatureAPIService services.SignatureVerificationAPIService,
+	betaKeyService services.BetaKeyService,
 	usageService services.UsageService,
 ) *SignatureVerificationHandler {
 	return &SignatureVerificationHandler{
 		creditsService:      creditsService,
 		userService:         userService,
 		signatureAPIService: signatureAPIService,
+		betaKeyService:      betaKeyService,
 		usageService:        usageService,
 		errorMapper:         apperrors.NewAPIErrorMapper(),
 	}
@@ -235,14 +238,46 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		return
 	}
 
+	betaKey := strings.TrimSpace(r.Header.Get("X-Beta-Key"))
+	if betaKey == "" {
+		betaKey = strings.TrimSpace(req.BetaKey)
+	}
+
+	useBeta := betaKey != ""
+	usageServiceName := h.signatureUsageServiceName(useBeta)
+	serviceName := "signature-verification"
+	if useBeta {
+		if _, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey); err != nil {
+			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
+				UserID:      user.UserID,
+				Email:       email,
+				ServiceName: usageServiceName,
+				Endpoint:    r.URL.Path,
+				Method:      r.Method,
+				Success:     false,
+				ErrorMsg:    "beta key validation failed: " + err.Error(),
+				CreditsUsed: 0,
+				IPAddress:   h.getClientIP(r),
+				UserAgent:   r.UserAgent(),
+				AuthMethod:  h.getAuthMethod(r),
+				ProcessTime: time.Since(startTime).Milliseconds(),
+			})
+
+			utils.SendErrorResponse(w, err)
+			return
+		}
+	}
+
 	// Process signature verification via external API
-	verificationResult, err := h.signatureAPIService.ProcessSignatureVerification(ctx, &req)
+	verificationResult, err := h.signatureAPIService.ProcessSignatureVerification(ctx, &req, &services.SignatureVerificationProcessOptions{
+		UseBeta: useBeta,
+	})
 	if err != nil {
 		// Track API failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 			UserID:      user.UserID,
 			Email:       email,
-			ServiceName: "signature-verification",
+			ServiceName: usageServiceName,
 			Endpoint:    r.URL.Path,
 			Method:      r.Method,
 			Success:     false,
@@ -254,9 +289,14 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 			ProcessTime: time.Since(startTime).Milliseconds(),
 		})
 
+		statusCode := http.StatusInternalServerError
+		if useBeta && strings.Contains(err.Error(), "not configured") {
+			statusCode = http.StatusServiceUnavailable
+		}
+
 		utils.SendErrorResponse(w, apperrors.NewAppError(
 			apperrors.ErrInternalServer,
-			http.StatusInternalServerError,
+			statusCode,
 			"signature verification operation failed: "+err.Error(),
 		))
 		return
@@ -277,7 +317,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 			UserID:      user.UserID,
 			Email:       email,
-			ServiceName: "signature-verification",
+			ServiceName: usageServiceName,
 			Endpoint:    r.URL.Path,
 			Method:      r.Method,
 			Success:     true, // API call succeeded even if verification failed
@@ -323,7 +363,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 			UserID:      user.UserID,
 			Email:       email,
-			ServiceName: "signature-verification",
+			ServiceName: usageServiceName,
 			Endpoint:    r.URL.Path,
 			Method:      r.Method,
 			Success:     false,
@@ -347,7 +387,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 		UserID:      user.UserID,
 		Email:       email,
-		ServiceName: "signature-verification",
+		ServiceName: usageServiceName,
 		Endpoint:    r.URL.Path,
 		Method:      r.Method,
 		Success:     true,
@@ -416,4 +456,11 @@ func (h *SignatureVerificationHandler) getAuthMethod(r *http.Request) string {
 		return "api_key"
 	}
 	return "bearer_token"
+}
+
+func (h *SignatureVerificationHandler) signatureUsageServiceName(useBeta bool) string {
+	if useBeta {
+		return "signature-verification-beta"
+	}
+	return "signature-verification"
 }
