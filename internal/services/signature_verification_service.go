@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"chi-mongo-backend/internal/models"
@@ -95,6 +96,8 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 	var apiResponse struct {
 		ReqID        string  `json:"req_id"`
 		Success      bool    `json:"success"`
+		Status       string  `json:"status"`
+		Message      string  `json:"message"`
 		ErrorMessage *string `json:"error_message"`
 		Data         *struct {
 			SimilarityPercentage float64 `json:"similarity_percentage"`
@@ -111,22 +114,35 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 		Success: apiResponse.Success,
 	}
 
+	if apiResponse.Data != nil {
+		result.Data = &models.SignatureVerificationData{
+			SimilarityPercentage: apiResponse.Data.SimilarityPercentage,
+			Classification:       apiResponse.Data.Classification,
+		}
+	}
+
 	if apiResponse.Success {
 		result.Status = "completed"
+		if apiResponse.Status != "" {
+			result.Status = apiResponse.Status
+		}
 		result.Message = "Signature verification completed successfully"
-
-		if apiResponse.Data != nil {
-			result.Data = &models.SignatureVerificationData{
-				SimilarityPercentage: apiResponse.Data.SimilarityPercentage,
-				Classification:       apiResponse.Data.Classification,
-			}
+		if strings.TrimSpace(apiResponse.Message) != "" {
+			result.Message = strings.TrimSpace(apiResponse.Message)
 		}
 	} else {
 		result.Status = "failed"
-		if apiResponse.ErrorMessage != nil {
-			result.Message = *apiResponse.ErrorMessage
-		} else {
+		if apiResponse.Status != "" {
+			result.Status = apiResponse.Status
+		}
+		switch {
+		case apiResponse.ErrorMessage != nil && strings.TrimSpace(*apiResponse.ErrorMessage) != "":
+			result.Message = strings.TrimSpace(*apiResponse.ErrorMessage)
+		case strings.TrimSpace(apiResponse.Message) != "":
+			result.Message = strings.TrimSpace(apiResponse.Message)
+		default:
 			result.Message = "Signature verification failed with unknown error"
+			log.Printf("Signature Verification API failure with no message field: %s", truncateForLog(string(body), 500))
 		}
 	}
 
@@ -139,4 +155,11 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 	}
 
 	return result, nil
+}
+
+func truncateForLog(value string, maxLen int) string {
+	if len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + "..."
 }
