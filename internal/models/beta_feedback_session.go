@@ -16,28 +16,64 @@ const (
 	BetaFeedbackRunOutcomeFailed    = "failed"
 )
 
-var validExpectedClassifications = map[string]bool{
-	"match":     true,
-	"no_match":  true,
-	"uncertain": true,
+var legacyExpectedClassifications = map[string]string{
+	"match":     "Genuine",
+	"no_match":  "Forged",
+	"uncertain": "Manual Review",
+}
+
+var canonicalExpectedClassifications = map[string]bool{
+	"genuine":        true,
+	"forged":         true,
+	"manual review":  true,
+	"not-detected":   true,
 }
 
 type BetaFeedbackExpectedResult struct {
-	ExpectedClassification string  `json:"expectedClassification" bson:"expectedClassification"`
+	ExpectedClassification string   `json:"expectedClassification" bson:"expectedClassification"`
 	ExpectedSimilarityMin  *float64 `json:"expectedSimilarityMin,omitempty" bson:"expectedSimilarityMin,omitempty"`
 	ExpectedSimilarityMax  *float64 `json:"expectedSimilarityMax,omitempty" bson:"expectedSimilarityMax,omitempty"`
-	Notes                  string  `json:"notes,omitempty" bson:"notes,omitempty"`
+	Notes                  string   `json:"notes,omitempty" bson:"notes,omitempty"`
+	ResponseAsExpected     bool     `json:"responseAsExpected,omitempty" bson:"responseAsExpected,omitempty"`
+}
+
+func normalizeExpectedClassification(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	if canonical, ok := legacyExpectedClassifications[lower]; ok {
+		return canonical
+	}
+	switch lower {
+	case "genuine":
+		return "Genuine"
+	case "forged":
+		return "Forged"
+	case "manual review":
+		return "Manual Review"
+	case "not-detected":
+		return "Not-Detected"
+	default:
+		return trimmed
+	}
+}
+
+func isValidExpectedClassification(classification string) bool {
+	_, ok := canonicalExpectedClassifications[strings.ToLower(classification)]
+	return ok
 }
 
 func (e *BetaFeedbackExpectedResult) Validate() error {
-	e.ExpectedClassification = strings.TrimSpace(strings.ToLower(e.ExpectedClassification))
+	e.ExpectedClassification = normalizeExpectedClassification(e.ExpectedClassification)
 	e.Notes = strings.TrimSpace(e.Notes)
 
 	if e.ExpectedClassification == "" {
 		return errors.New("expectedClassification is required")
 	}
-	if !validExpectedClassifications[e.ExpectedClassification] {
-		return errors.New("expectedClassification must be match, no_match, or uncertain")
+	if !isValidExpectedClassification(e.ExpectedClassification) {
+		return errors.New("expectedClassification must be Genuine, Forged, Manual Review, or Not-Detected")
 	}
 	if e.ExpectedSimilarityMin != nil && (*e.ExpectedSimilarityMin < 0 || *e.ExpectedSimilarityMin > 100) {
 		return errors.New("expectedSimilarityMin must be between 0 and 100")
@@ -47,6 +83,9 @@ func (e *BetaFeedbackExpectedResult) Validate() error {
 	}
 	if e.ExpectedSimilarityMin != nil && e.ExpectedSimilarityMax != nil && *e.ExpectedSimilarityMin > *e.ExpectedSimilarityMax {
 		return errors.New("expectedSimilarityMin cannot exceed expectedSimilarityMax")
+	}
+	if !e.ResponseAsExpected && e.ExpectedSimilarityMin == nil {
+		return errors.New("expectedSimilarityMin is required when the response was not as expected")
 	}
 	return nil
 }
