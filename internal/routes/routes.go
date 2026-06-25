@@ -234,6 +234,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 
 				// Beta feedback sessions (Admin only)
 				r.Get("/beta-feedback/sessions", h.BetaFeedback.ListSessionsAdmin)
+				r.Get("/beta-feedback/sessions/{sessionId}", h.BetaFeedback.GetSessionAdmin)
 			})
 		})
 

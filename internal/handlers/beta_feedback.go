@@ -133,3 +133,17 @@ func (h *BetaFeedbackHandler) ListSessionsAdmin(w http.ResponseWriter, r *http.R
 		Total:    len(sessions),
 	})
 }
+
+func (h *BetaFeedbackHandler) GetSessionAdmin(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	session, err := h.betaFeedbackService.GetSessionByID(r.Context(), sessionID)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, models.BetaFeedbackSessionDetailResponse{
+		Message: "Beta feedback session retrieved successfully",
+		Session: *session,
+	})
+}

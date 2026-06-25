@@ -348,7 +348,16 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 			UserID: user.UserID,
 			Amount: 2,
 		}
-		h.creditsService.DeductCredits(ctx, deductReq)
+		updatedBalance, _ := h.creditsService.DeductCredits(ctx, deductReq)
+		remainingCredits := 0
+		if updatedBalance != nil {
+			remainingCredits = updatedBalance.Credits
+		}
+
+		var failureMessage string
+		if verificationResult != nil {
+			failureMessage = verificationResult.Message
+		}
 
 		// Track API failure (but still consider it a "successful" call since API responded)
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
@@ -358,7 +367,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 			Endpoint:    r.URL.Path,
 			Method:      r.Method,
 			Success:     true, // API call succeeded even if verification failed
-			ErrorMsg:    verificationResult.Message,
+			ErrorMsg:    failureMessage,
 			CreditsUsed: 2,
 			IPAddress:   h.getClientIP(r),
 			UserAgent:   r.UserAgent(),
@@ -366,23 +375,52 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 			ProcessTime: time.Since(startTime).Milliseconds(),
 		})
 
+		actualResult := h.betaFeedbackActualResult(verificationResult, models.BetaFeedbackRunOutcomeFailed)
+		betaFeedbackSessionID := h.createBetaFeedbackSessionIfNeeded(
+			ctx,
+			useBeta,
+			user,
+			email,
+			serviceName,
+			betaKeyRecord,
+			req.DocBase64,
+			h.verificationReqID(verificationResult),
+			actualResult,
+			models.BetaFeedbackRunOutcomeFailed,
+			failureMessage,
+			2,
+		)
+
 		// Create original response structure
-		originalResponse := struct {
+		var originalResponse struct {
 			ReqID        string                 `json:"req_id"`
 			Success      bool                   `json:"success"`
 			ErrorMessage string                 `json:"error_message"`
 			Data         map[string]interface{} `json:"data"`
-		}{
-			ReqID:        verificationResult.ReqID,
-			Success:      verificationResult.Success,
-			ErrorMessage: verificationResult.Message,
-			Data:         map[string]interface{}{},
 		}
+		if verificationResult != nil {
+			originalResponse.ReqID = verificationResult.ReqID
+			originalResponse.Success = verificationResult.Success
+			originalResponse.ErrorMessage = verificationResult.Message
+		}
+		originalResponse.Data = map[string]interface{}{}
 
 		if isAPIKeyAuth {
-			utils.SendJSONResponse(w, http.StatusBadRequest, originalResponse)
+			apiResponse := map[string]interface{}{
+				"req_id":                   originalResponse.ReqID,
+				"success":                  originalResponse.Success,
+				"error_message":            originalResponse.ErrorMessage,
+				"data":                     originalResponse.Data,
+				"remaining_credits":        remainingCredits,
+				"beta_feedback_session_id": betaFeedbackSessionID,
+				"beta_feedback_pending":    betaFeedbackSessionID != "",
+			}
+			utils.SendJSONResponse(w, http.StatusBadRequest, apiResponse)
 		} else {
-			apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, verificationResult.Message, originalResponse)
+			apiError := apperrors.NewAPIErrorWithOriginalResponse(h.errorMapper, failureMessage, originalResponse)
+			if betaFeedbackSessionID != "" {
+				apiError.WithBetaFeedback(betaFeedbackSessionID, remainingCredits)
+			}
 			utils.SendErrorResponse(w, apiError)
 		}
 		return
@@ -438,34 +476,21 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	var betaFeedbackSessionID string
 	if useBeta && h.betaFeedbackService != nil {
-		var actualResult *models.BetaFeedbackActualResult
-		if verificationResult.Data != nil {
-			actualResult = &models.BetaFeedbackActualResult{
-				SimilarityPercentage: verificationResult.Data.SimilarityPercentage,
-				Classification:       verificationResult.Data.Classification,
-			}
-		}
-
-		betaKeyPrefix := ""
-		if betaKeyRecord != nil {
-			betaKeyPrefix = betaKeyRecord.KeyPrefix
-		}
-
-		session, sessionErr := h.betaFeedbackService.CreateSession(ctx, &models.CreateBetaFeedbackSessionRequest{
-			UserID:         user.UserID,
-			Email:          email,
-			ServiceName:    serviceName,
-			BetaKeyPrefix:  betaKeyPrefix,
-			ReqID:          verificationResult.ReqID,
-			Inputs:         req.DocBase64,
-			ActualResult:   actualResult,
-			CreditsCharged: 2,
-		})
-		if sessionErr != nil {
-			fmt.Printf("Failed to create beta feedback session: %v\n", sessionErr)
-		} else if session != nil {
-			betaFeedbackSessionID = session.ID.Hex()
-		}
+		actualResult := h.betaFeedbackActualResult(verificationResult, models.BetaFeedbackRunOutcomeCompleted)
+		betaFeedbackSessionID = h.createBetaFeedbackSessionIfNeeded(
+			ctx,
+			useBeta,
+			user,
+			email,
+			serviceName,
+			betaKeyRecord,
+			req.DocBase64,
+			verificationResult.ReqID,
+			actualResult,
+			models.BetaFeedbackRunOutcomeCompleted,
+			"",
+			2,
+		)
 	}
 
 	// Send different responses based on authentication method
@@ -544,4 +569,75 @@ func (h *SignatureVerificationHandler) signatureUsageServiceName(useBeta bool) s
 		return "signature-verification-beta"
 	}
 	return "signature-verification"
+}
+
+// createBetaFeedbackSessionIfNeeded stores a feedback session after a charged beta run.
+// To enable beta feedback for a new service: add it to SupportedBetaServices, wire beta key
+// validation in that service's handler, and call this helper after credit deduction.
+func (h *SignatureVerificationHandler) createBetaFeedbackSessionIfNeeded(
+	ctx context.Context,
+	useBeta bool,
+	user *models.User,
+	email string,
+	serviceName string,
+	betaKeyRecord *models.BetaKey,
+	inputs []string,
+	reqID string,
+	actualResult *models.BetaFeedbackActualResult,
+	runOutcome string,
+	failureMessage string,
+	creditsCharged int,
+) string {
+	if !useBeta || h.betaFeedbackService == nil {
+		return ""
+	}
+
+	betaKeyPrefix := ""
+	if betaKeyRecord != nil {
+		betaKeyPrefix = betaKeyRecord.KeyPrefix
+	}
+
+	session, err := h.betaFeedbackService.CreateSession(ctx, &models.CreateBetaFeedbackSessionRequest{
+		UserID:         user.UserID,
+		Email:          email,
+		ServiceName:    serviceName,
+		BetaKeyPrefix:  betaKeyPrefix,
+		ReqID:          reqID,
+		Inputs:         inputs,
+		ActualResult:   actualResult,
+		CreditsCharged: creditsCharged,
+		RunOutcome:     runOutcome,
+		FailureMessage: failureMessage,
+	})
+	if err != nil {
+		fmt.Printf("Failed to create beta feedback session: %v\n", err)
+		return ""
+	}
+	if session != nil {
+		return session.ID.Hex()
+	}
+	return ""
+}
+
+func (h *SignatureVerificationHandler) verificationReqID(result *models.SignatureVerificationResult) string {
+	if result == nil {
+		return ""
+	}
+	return result.ReqID
+}
+
+func (h *SignatureVerificationHandler) betaFeedbackActualResult(
+	result *models.SignatureVerificationResult,
+	runOutcome string,
+) *models.BetaFeedbackActualResult {
+	if result != nil && result.Data != nil {
+		return &models.BetaFeedbackActualResult{
+			SimilarityPercentage: result.Data.SimilarityPercentage,
+			Classification:       result.Data.Classification,
+		}
+	}
+	if runOutcome == models.BetaFeedbackRunOutcomeFailed {
+		return &models.BetaFeedbackActualResult{Classification: "Failed"}
+	}
+	return nil
 }

@@ -19,6 +19,9 @@ type EnhancedErrorResponse struct {
 	ErrorCode        string      `json:"error_code,omitempty"`
 	RequestID        string      `json:"request_id,omitempty"`
 	OriginalResponse interface{} `json:"original_response,omitempty"` // Include original backend response
+	BetaFeedbackSessionID string `json:"beta_feedback_session_id,omitempty"`
+	BetaFeedbackPending   bool   `json:"beta_feedback_pending,omitempty"`
+	RemainingCredits      *int   `json:"remaining_credits,omitempty"`
 }
 
 // SendJSONResponse sends a JSON response with proper error handling
@@ -62,12 +65,18 @@ func SendErrorResponse(w http.ResponseWriter, err error) {
 		
 		// Send enhanced error response with user-friendly fields and original response
 		response := EnhancedErrorResponse{
-			Error:            appErr.Message,
-			UserMessage:      appErr.UserMessage,
-			TechnicalMessage: appErr.TechnicalMessage,
-			Suggestion:       appErr.Suggestion,
-			ErrorCode:        appErr.ErrorCode,
-			OriginalResponse: cleanedOriginalResponse,
+			Error:                 appErr.Message,
+			UserMessage:           appErr.UserMessage,
+			TechnicalMessage:      appErr.TechnicalMessage,
+			Suggestion:            appErr.Suggestion,
+			ErrorCode:             appErr.ErrorCode,
+			OriginalResponse:      cleanedOriginalResponse,
+			BetaFeedbackSessionID: appErr.BetaFeedbackSessionID,
+			BetaFeedbackPending:   appErr.BetaFeedbackPending,
+		}
+		if appErr.BetaFeedbackSessionID != "" {
+			remainingCredits := appErr.RemainingCredits
+			response.RemainingCredits = &remainingCredits
 		}
 		
 		SendJSONResponse(w, statusCode, response)

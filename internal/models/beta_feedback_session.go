@@ -11,6 +11,9 @@ import (
 const (
 	BetaFeedbackStatusPendingFeedback = "pending_feedback"
 	BetaFeedbackStatusRefunded        = "refunded"
+
+	BetaFeedbackRunOutcomeCompleted = "completed"
+	BetaFeedbackRunOutcomeFailed    = "failed"
 )
 
 var validExpectedClassifications = map[string]bool{
@@ -66,6 +69,8 @@ type BetaFeedbackSession struct {
 	CreditsCharged    int                         `bson:"creditsCharged" json:"creditsCharged"`
 	CreditsRefunded   int                         `bson:"creditsRefunded" json:"creditsRefunded"`
 	Status            string                      `bson:"status" json:"status"`
+	RunOutcome        string                      `bson:"runOutcome,omitempty" json:"runOutcome,omitempty"`
+	FailureMessage    string                      `bson:"failureMessage,omitempty" json:"failureMessage,omitempty"`
 	CreatedAt         time.Time                   `bson:"createdAt" json:"createdAt"`
 	FeedbackSubmittedAt *time.Time                `bson:"feedbackSubmittedAt,omitempty" json:"feedbackSubmittedAt,omitempty"`
 	RefundedAt        *time.Time                  `bson:"refundedAt,omitempty" json:"refundedAt,omitempty"`
@@ -80,6 +85,8 @@ type CreateBetaFeedbackSessionRequest struct {
 	Inputs         []string
 	ActualResult   *BetaFeedbackActualResult
 	CreditsCharged int
+	RunOutcome     string
+	FailureMessage string
 }
 
 type SubmitBetaFeedbackRequest struct {
@@ -99,6 +106,33 @@ type BetaFeedbackSessionSummary struct {
 	ActualResult   *BetaFeedbackActualResult   `json:"actualResult,omitempty"`
 	CreatedAt      time.Time                   `json:"createdAt"`
 	InputCount     int                         `json:"inputCount"`
+	RunOutcome     string                      `json:"runOutcome,omitempty"`
+	FailureMessage string                      `json:"failureMessage,omitempty"`
+}
+
+type BetaFeedbackSessionAdminDetail struct {
+	ID                  string                      `json:"id"`
+	UserID              string                      `json:"userId"`
+	Email               string                      `json:"email"`
+	ServiceName         string                      `json:"serviceName"`
+	BetaKeyPrefix       string                      `json:"betaKeyPrefix,omitempty"`
+	ReqID               string                      `json:"reqId"`
+	Inputs              []string                    `json:"inputs"`
+	ActualResult        *BetaFeedbackActualResult   `json:"actualResult,omitempty"`
+	ExpectedResult      *BetaFeedbackExpectedResult `json:"expectedResult,omitempty"`
+	CreditsCharged      int                         `json:"creditsCharged"`
+	CreditsRefunded     int                         `json:"creditsRefunded"`
+	Status              string                      `json:"status"`
+	RunOutcome          string                      `json:"runOutcome,omitempty"`
+	FailureMessage      string                      `json:"failureMessage,omitempty"`
+	CreatedAt           time.Time                   `json:"createdAt"`
+	FeedbackSubmittedAt *time.Time                  `json:"feedbackSubmittedAt,omitempty"`
+	RefundedAt          *time.Time                  `json:"refundedAt,omitempty"`
+}
+
+type BetaFeedbackSessionDetailResponse struct {
+	Message string                       `json:"message"`
+	Session BetaFeedbackSessionAdminDetail `json:"session"`
 }
 
 type SubmitBetaFeedbackResponse struct {
@@ -123,10 +157,35 @@ func (s *BetaFeedbackSession) ToSummary() BetaFeedbackSessionSummary {
 		ActualResult:   s.ActualResult,
 		CreatedAt:      s.CreatedAt,
 		InputCount:     len(s.Inputs),
+		RunOutcome:     s.RunOutcome,
+		FailureMessage: s.FailureMessage,
 	}
 }
 
 func (s *BetaFeedbackSession) SanitizeForAdmin() BetaFeedbackSession {
 	sanitized := *s
+	sanitized.Inputs = nil
 	return sanitized
+}
+
+func (s *BetaFeedbackSession) ToAdminDetail() BetaFeedbackSessionAdminDetail {
+	return BetaFeedbackSessionAdminDetail{
+		ID:                  s.ID.Hex(),
+		UserID:              s.UserID,
+		Email:               s.Email,
+		ServiceName:         s.ServiceName,
+		BetaKeyPrefix:       s.BetaKeyPrefix,
+		ReqID:               s.ReqID,
+		Inputs:              s.Inputs,
+		ActualResult:        s.ActualResult,
+		ExpectedResult:      s.ExpectedResult,
+		CreditsCharged:      s.CreditsCharged,
+		CreditsRefunded:     s.CreditsRefunded,
+		Status:              s.Status,
+		RunOutcome:          s.RunOutcome,
+		FailureMessage:      s.FailureMessage,
+		CreatedAt:           s.CreatedAt,
+		FeedbackSubmittedAt: s.FeedbackSubmittedAt,
+		RefundedAt:          s.RefundedAt,
+	}
 }

@@ -22,6 +22,7 @@ type BetaFeedbackService interface {
 	HasPendingSession(ctx context.Context, userID, serviceName string) (bool, error)
 	SubmitFeedback(ctx context.Context, userID, email, sessionID string, expected *models.BetaFeedbackExpectedResult) (*models.SubmitBetaFeedbackResponse, error)
 	ListSessions(ctx context.Context, serviceName string, limit int) ([]models.BetaFeedbackSession, error)
+	GetSessionByID(ctx context.Context, sessionID string) (*models.BetaFeedbackSessionAdminDetail, error)
 }
 
 type betaFeedbackService struct {
@@ -51,6 +52,8 @@ func (s *betaFeedbackService) CreateSession(ctx context.Context, req *models.Cre
 		Inputs:         req.Inputs,
 		ActualResult:   req.ActualResult,
 		CreditsCharged: req.CreditsCharged,
+		RunOutcome:     req.RunOutcome,
+		FailureMessage: req.FailureMessage,
 		Status:         models.BetaFeedbackStatusPendingFeedback,
 		CreatedAt:      now,
 	}
@@ -135,6 +138,24 @@ func (s *betaFeedbackService) SubmitFeedback(ctx context.Context, userID, email,
 		CreditsRefunded:  refundAmount,
 		RemainingCredits: balance.Credits,
 	}, nil
+}
+
+func (s *betaFeedbackService) GetSessionByID(ctx context.Context, sessionID string) (*models.BetaFeedbackSessionAdminDetail, error) {
+	objectID, err := primitive.ObjectIDFromHex(sessionID)
+	if err != nil {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid session id")
+	}
+
+	session, err := s.repo.GetByID(ctx, objectID)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "beta feedback session not found")
+	}
+
+	detail := session.ToAdminDetail()
+	return &detail, nil
 }
 
 func (s *betaFeedbackService) ListSessions(ctx context.Context, serviceName string, limit int) ([]models.BetaFeedbackSession, error) {

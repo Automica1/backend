@@ -33,6 +33,9 @@ type AppError struct {
 	Suggestion       string      `json:"suggestion,omitempty"`
 	ErrorCode        string      `json:"error_code,omitempty"`
 	OriginalResponse interface{} `json:"original_response,omitempty"` // NEW: Store original backend response
+	BetaFeedbackSessionID string `json:"beta_feedback_session_id,omitempty"`
+	BetaFeedbackPending   bool   `json:"beta_feedback_pending,omitempty"`
+	RemainingCredits      int    `json:"remaining_credits,omitempty"`
 }
 
 // Error implements the error interface
@@ -77,6 +80,14 @@ func NewAppErrorWithOriginalResponse(errorType string, statusCode int, message s
 // WithOriginalResponse adds original response to existing AppError
 func (e *AppError) WithOriginalResponse(originalResponse interface{}) *AppError {
 	e.OriginalResponse = originalResponse
+	return e
+}
+
+// WithBetaFeedback adds beta feedback session metadata to an error response.
+func (e *AppError) WithBetaFeedback(sessionID string, remainingCredits int) *AppError {
+	e.BetaFeedbackSessionID = sessionID
+	e.BetaFeedbackPending = sessionID != ""
+	e.RemainingCredits = remainingCredits
 	return e
 }
 
