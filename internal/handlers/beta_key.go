@@ -51,8 +51,9 @@ func (h *BetaKeyHandler) GenerateBetaKey(w http.ResponseWriter, r *http.Request)
 			TargetID:   response.KeyPrefix,
 			Outcome:    "success",
 			Metadata: map[string]interface{}{
-				"serviceName": req.ServiceName,
-				"label":       req.Label,
+				"serviceName":       req.ServiceName,
+				"label":             req.Label,
+				"assignedUserEmail": req.AssignedUserEmail,
 			},
 		})
 	}

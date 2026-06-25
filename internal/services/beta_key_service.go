@@ -18,22 +18,33 @@ import (
 
 type BetaKeyService interface {
 	GenerateKey(ctx context.Context, req *models.GenerateBetaKeyRequest, createdBy string) (*models.GenerateBetaKeyResponse, error)
-	ValidateKey(ctx context.Context, serviceName, plaintextKey string) (*models.BetaKey, error)
+	ValidateKey(ctx context.Context, serviceName, plaintextKey, userEmail string) (*models.BetaKey, error)
 	ListKeys(ctx context.Context, serviceName string) ([]*models.BetaKey, error)
 	RevokeKey(ctx context.Context, keyID string) (*models.RevokeBetaKeyResponse, error)
 }
 
 type betaKeyService struct {
 	betaKeyRepo repository.BetaKeyRepository
+	userService UserService
 }
 
-func NewBetaKeyService(betaKeyRepo repository.BetaKeyRepository) BetaKeyService {
-	return &betaKeyService{betaKeyRepo: betaKeyRepo}
+func NewBetaKeyService(betaKeyRepo repository.BetaKeyRepository, userService UserService) BetaKeyService {
+	return &betaKeyService{
+		betaKeyRepo: betaKeyRepo,
+		userService: userService,
+	}
 }
 
 func (s *betaKeyService) GenerateKey(ctx context.Context, req *models.GenerateBetaKeyRequest, createdBy string) (*models.GenerateBetaKeyResponse, error) {
 	if err := req.Validate(); err != nil {
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "validation failed", err.Error())
+	}
+
+	if _, err := s.userService.GetUserByEmail(ctx, req.AssignedUserEmail); err != nil {
+		if apperrors.IsErrorType(err, apperrors.ErrUserNotFound) {
+			return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "assigned user not found")
+		}
+		return nil, err
 	}
 
 	plaintext, keyHash, keyPrefix, err := s.generateBetaKey()
@@ -49,11 +60,12 @@ func (s *betaKeyService) GenerateKey(ctx context.Context, req *models.GenerateBe
 	}
 
 	record := &models.BetaKey{
-		KeyHash:     keyHash,
-		KeyPrefix:   keyPrefix,
-		ServiceName: req.ServiceName,
-		Label:       req.Label,
-		CreatedBy:   createdBy,
+		KeyHash:           keyHash,
+		KeyPrefix:         keyPrefix,
+		ServiceName:       req.ServiceName,
+		Label:             req.Label,
+		AssignedUserEmail: req.AssignedUserEmail,
+		CreatedBy:         createdBy,
 		CreatedAt:   now,
 		ExpiresAt:   expiresAt,
 		IsActive:    true,
@@ -65,18 +77,20 @@ func (s *betaKeyService) GenerateKey(ctx context.Context, req *models.GenerateBe
 	}
 
 	return &models.GenerateBetaKeyResponse{
-		Message:     "Beta key generated successfully",
-		BetaKey:     plaintext,
-		KeyPrefix:   keyPrefix,
-		ServiceName: req.ServiceName,
-		Label:       req.Label,
-		ExpiresAt:   expiresAt,
-		CreatedAt:   now,
+		Message:           "Beta key generated successfully",
+		BetaKey:           plaintext,
+		KeyPrefix:         keyPrefix,
+		ServiceName:       req.ServiceName,
+		Label:             req.Label,
+		AssignedUserEmail: req.AssignedUserEmail,
+		ExpiresAt:           expiresAt,
+		CreatedAt:           now,
 	}, nil
 }
 
-func (s *betaKeyService) ValidateKey(ctx context.Context, serviceName, plaintextKey string) (*models.BetaKey, error) {
+func (s *betaKeyService) ValidateKey(ctx context.Context, serviceName, plaintextKey, userEmail string) (*models.BetaKey, error) {
 	plaintextKey = strings.TrimSpace(plaintextKey)
+	userEmail = strings.TrimSpace(strings.ToLower(userEmail))
 	if plaintextKey == "" {
 		return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "beta key is required")
 	}
@@ -94,6 +108,15 @@ func (s *betaKeyService) ValidateKey(ctx context.Context, serviceName, plaintext
 	}
 	if record.ServiceName != serviceName {
 		return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "beta key is not valid for this service")
+	}
+	if record.AssignedUserEmail == "" {
+		return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "beta key is not assigned to a user")
+	}
+	if userEmail == "" {
+		return nil, apperrors.NewAppError(apperrors.ErrUnauthorized, 401, "user email is required for beta access")
+	}
+	if record.AssignedUserEmail != userEmail {
+		return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "beta key is not valid for this user")
 	}
 
 	go func() {

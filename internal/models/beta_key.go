@@ -18,12 +18,13 @@ func IsBetaServiceSupported(serviceName string) bool {
 }
 
 type BetaKey struct {
-	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
-	KeyHash     string             `bson:"keyHash" json:"-"`
-	KeyPrefix   string             `bson:"keyPrefix" json:"keyPrefix"`
-	ServiceName string             `bson:"serviceName" json:"serviceName"`
-	Label       string             `bson:"label" json:"label"`
-	CreatedBy   string             `bson:"createdBy" json:"createdBy"`
+	ID                primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	KeyHash           string             `bson:"keyHash" json:"-"`
+	KeyPrefix         string             `bson:"keyPrefix" json:"keyPrefix"`
+	ServiceName       string             `bson:"serviceName" json:"serviceName"`
+	Label             string             `bson:"label" json:"label"`
+	AssignedUserEmail string             `bson:"assignedUserEmail" json:"assignedUserEmail"`
+	CreatedBy         string             `bson:"createdBy" json:"createdBy"`
 	CreatedAt   time.Time          `bson:"createdAt" json:"createdAt"`
 	ExpiresAt   *time.Time         `bson:"expiresAt,omitempty" json:"expiresAt,omitempty"`
 	RevokedAt   *time.Time         `bson:"revokedAt,omitempty" json:"revokedAt,omitempty"`
@@ -33,17 +34,19 @@ type BetaKey struct {
 }
 
 type GenerateBetaKeyRequest struct {
-	ServiceName   string `json:"serviceName"`
-	Label         string `json:"label"`
-	ExpiresInDays *int   `json:"expiresInDays,omitempty"`
+	ServiceName       string `json:"serviceName"`
+	Label             string `json:"label"`
+	AssignedUserEmail string `json:"assignedUserEmail"`
+	ExpiresInDays     *int   `json:"expiresInDays,omitempty"`
 }
 
 type GenerateBetaKeyResponse struct {
-	Message     string     `json:"message"`
-	BetaKey     string     `json:"betaKey"`
-	KeyPrefix   string     `json:"keyPrefix"`
-	ServiceName string     `json:"serviceName"`
-	Label       string     `json:"label"`
+	Message           string     `json:"message"`
+	BetaKey           string     `json:"betaKey"`
+	KeyPrefix         string     `json:"keyPrefix"`
+	ServiceName       string     `json:"serviceName"`
+	Label             string     `json:"label"`
+	AssignedUserEmail string     `json:"assignedUserEmail"`
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 }
@@ -62,12 +65,19 @@ type RevokeBetaKeyResponse struct {
 func (r *GenerateBetaKeyRequest) Validate() error {
 	r.ServiceName = strings.TrimSpace(r.ServiceName)
 	r.Label = strings.TrimSpace(r.Label)
+	r.AssignedUserEmail = strings.TrimSpace(strings.ToLower(r.AssignedUserEmail))
 
 	if r.ServiceName == "" {
 		return errors.New("serviceName is required")
 	}
 	if !IsBetaServiceSupported(r.ServiceName) {
 		return errors.New("beta is not supported for this service")
+	}
+	if r.AssignedUserEmail == "" {
+		return errors.New("assignedUserEmail is required")
+	}
+	if !isValidEmail(r.AssignedUserEmail) {
+		return errors.New("invalid assignedUserEmail format")
 	}
 	if r.Label == "" {
 		return errors.New("label is required")

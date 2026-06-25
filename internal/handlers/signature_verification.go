@@ -247,7 +247,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	usageServiceName := h.signatureUsageServiceName(useBeta)
 	serviceName := "signature-verification"
 	if useBeta {
-		if _, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey); err != nil {
+		if _, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey, email); err != nil {
 			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 				UserID:      user.UserID,
 				Email:       email,

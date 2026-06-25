@@ -63,7 +63,7 @@ func main() {
 	userService := services.NewUserService(userRepo, creditsRepo, activityRepo)
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
-	betaKeyService := services.NewBetaKeyService(betaKeyRepo)
+	betaKeyService := services.NewBetaKeyService(betaKeyRepo, userService)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
 	usageService := services.NewUsageService(usageRepo) // Add usage service
 	planService := services.NewPlanService(planRepo)    // Add plan service
