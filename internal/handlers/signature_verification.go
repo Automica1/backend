@@ -279,7 +279,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 				utils.SendErrorResponse(w, pendingErr)
 				return
 			}
-			if hasPending {
+			if hasPending && balance.Credits < 2 {
 				h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 					UserID:      user.UserID,
 					Email:       email,
