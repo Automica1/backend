@@ -27,6 +27,7 @@ type Handlers struct {
 	Token                 *handlers.TokenHandler
 	APIKey                *handlers.APIKeyHandler
 	BetaKey               *handlers.BetaKeyHandler
+	BetaFeedback          *handlers.BetaFeedbackHandler
 	Usage                 *handlers.UsageHandler        // Add usage handler
 	Subscription          *handlers.SubscriptionHandler // Add subscription handler
 	Plan                  *handlers.PlanHandler         // Add plan handler
@@ -230,6 +231,9 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Post("/", h.BetaKey.GenerateBetaKey)
 					r.Delete("/{keyId}", h.BetaKey.RevokeBetaKey)
 				})
+
+				// Beta feedback sessions (Admin only)
+				r.Get("/beta-feedback/sessions", h.BetaFeedback.ListSessionsAdmin)
 			})
 		})
 
@@ -245,6 +249,9 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Post("/signature-verification", h.SignatureVerification.ProcessSignatureVerification)
 			r.Post("/face-detect", h.FaceDetect.ProcessFaceDetection)
 			r.Post("/face-verification", h.FaceVerify.ProcessFaceVerification)
+
+			r.Get("/beta-feedback/pending", h.BetaFeedback.GetPendingFeedback)
+			r.Post("/beta-feedback/{sessionId}", h.BetaFeedback.SubmitFeedback)
 		})
 
 		// Public subscription webhook

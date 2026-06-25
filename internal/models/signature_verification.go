@@ -56,9 +56,11 @@ type SignatureVerificationData struct {
 
 // SignatureVerificationResponse represents the API response to the client
 type SignatureVerificationResponse struct {
-	Message          string                       `json:"message"`
-	UserID           string                       `json:"user_id"`
-	RemainingCredits int                         `json:"remaining_credits"`
-	VerificationResult *SignatureVerificationResult `json:"verification_result"`
-	ProcessedAt      time.Time                   `json:"processed_at"`
+	Message               string                       `json:"message"`
+	UserID                string                       `json:"user_id"`
+	RemainingCredits      int                          `json:"remaining_credits"`
+	VerificationResult    *SignatureVerificationResult `json:"verification_result"`
+	ProcessedAt           time.Time                    `json:"processed_at"`
+	BetaFeedbackSessionID string                       `json:"beta_feedback_session_id,omitempty"`
+	BetaFeedbackPending   bool                         `json:"beta_feedback_pending,omitempty"`
 }

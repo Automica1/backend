@@ -20,6 +20,7 @@ type SignatureVerificationHandler struct {
 	userService         services.UserService
 	signatureAPIService services.SignatureVerificationAPIService
 	betaKeyService      services.BetaKeyService
+	betaFeedbackService services.BetaFeedbackService
 	usageService        services.UsageService
 	errorMapper         *apperrors.APIErrorMapper
 }
@@ -29,6 +30,7 @@ func NewSignatureVerificationHandler(
 	userService services.UserService,
 	signatureAPIService services.SignatureVerificationAPIService,
 	betaKeyService services.BetaKeyService,
+	betaFeedbackService services.BetaFeedbackService,
 	usageService services.UsageService,
 ) *SignatureVerificationHandler {
 	return &SignatureVerificationHandler{
@@ -36,6 +38,7 @@ func NewSignatureVerificationHandler(
 		userService:         userService,
 		signatureAPIService: signatureAPIService,
 		betaKeyService:      betaKeyService,
+		betaFeedbackService: betaFeedbackService,
 		usageService:        usageService,
 		errorMapper:         apperrors.NewAPIErrorMapper(),
 	}
@@ -246,8 +249,10 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	useBeta := betaKey != ""
 	usageServiceName := h.signatureUsageServiceName(useBeta)
 	serviceName := "signature-verification"
+	var betaKeyRecord *models.BetaKey
 	if useBeta {
-		if _, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey, email); err != nil {
+		record, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey, email)
+		if err != nil {
 			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 				UserID:      user.UserID,
 				Email:       email,
@@ -265,6 +270,38 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 			utils.SendErrorResponse(w, err)
 			return
+		}
+		betaKeyRecord = record
+
+		if h.betaFeedbackService != nil {
+			hasPending, pendingErr := h.betaFeedbackService.HasPendingSession(ctx, user.UserID, serviceName)
+			if pendingErr != nil {
+				utils.SendErrorResponse(w, pendingErr)
+				return
+			}
+			if hasPending {
+				h.trackUsage(r.Context(), &models.UsageTrackingRequest{
+					UserID:      user.UserID,
+					Email:       email,
+					ServiceName: usageServiceName,
+					Endpoint:    r.URL.Path,
+					Method:      r.Method,
+					Success:     false,
+					ErrorMsg:    "pending beta feedback must be submitted before another beta run",
+					CreditsUsed: 0,
+					IPAddress:   h.getClientIP(r),
+					UserAgent:   r.UserAgent(),
+					AuthMethod:  h.getAuthMethod(r),
+					ProcessTime: time.Since(startTime).Milliseconds(),
+				})
+
+				utils.SendErrorResponse(w, apperrors.NewAppError(
+					apperrors.ErrValidation,
+					http.StatusBadRequest,
+					"Please submit expected results for your last custom model test before running another beta request",
+				))
+				return
+			}
 		}
 	}
 
@@ -399,16 +436,60 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		ProcessTime: time.Since(startTime).Milliseconds(),
 	})
 
+	var betaFeedbackSessionID string
+	if useBeta && h.betaFeedbackService != nil {
+		var actualResult *models.BetaFeedbackActualResult
+		if verificationResult.Data != nil {
+			actualResult = &models.BetaFeedbackActualResult{
+				SimilarityPercentage: verificationResult.Data.SimilarityPercentage,
+				Classification:       verificationResult.Data.Classification,
+			}
+		}
+
+		betaKeyPrefix := ""
+		if betaKeyRecord != nil {
+			betaKeyPrefix = betaKeyRecord.KeyPrefix
+		}
+
+		session, sessionErr := h.betaFeedbackService.CreateSession(ctx, &models.CreateBetaFeedbackSessionRequest{
+			UserID:         user.UserID,
+			Email:          email,
+			ServiceName:    serviceName,
+			BetaKeyPrefix:  betaKeyPrefix,
+			ReqID:          verificationResult.ReqID,
+			Inputs:         req.DocBase64,
+			ActualResult:   actualResult,
+			CreditsCharged: 2,
+		})
+		if sessionErr != nil {
+			fmt.Printf("Failed to create beta feedback session: %v\n", sessionErr)
+		} else if session != nil {
+			betaFeedbackSessionID = session.ID.Hex()
+		}
+	}
+
 	// Send different responses based on authentication method
 	if isAPIKeyAuth {
-		utils.SendJSONResponse(w, http.StatusOK, verificationResult)
+		apiResponse := map[string]interface{}{
+			"req_id":                   verificationResult.ReqID,
+			"success":                  verificationResult.Success,
+			"status":                   verificationResult.Status,
+			"message":                  verificationResult.Message,
+			"data":                     verificationResult.Data,
+			"remaining_credits":        updatedBalance.Credits,
+			"beta_feedback_session_id": betaFeedbackSessionID,
+			"beta_feedback_pending":    betaFeedbackSessionID != "",
+		}
+		utils.SendJSONResponse(w, http.StatusOK, apiResponse)
 	} else {
 		response := &models.SignatureVerificationResponse{
-			Message:            "Signature verification completed successfully",
-			UserID:             user.UserID,
-			RemainingCredits:   updatedBalance.Credits,
-			VerificationResult: verificationResult,
-			ProcessedAt:        time.Now(),
+			Message:               "Signature verification completed successfully",
+			UserID:                user.UserID,
+			RemainingCredits:      updatedBalance.Credits,
+			VerificationResult:    verificationResult,
+			ProcessedAt:           time.Now(),
+			BetaFeedbackSessionID: betaFeedbackSessionID,
+			BetaFeedbackPending:   betaFeedbackSessionID != "",
 		}
 		utils.SendJSONResponse(w, http.StatusOK, response)
 	}

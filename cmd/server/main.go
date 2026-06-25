@@ -46,6 +46,7 @@ func main() {
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	betaKeyRepo := repository.NewBetaKeyRepository(db.GetCollection("beta_keys"))
+	betaFeedbackRepo := repository.NewBetaFeedbackRepository(db.GetCollection("beta_feedback_sessions"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys"))
 	activityRepo := repository.NewActivityRepository(db.GetCollection("activities"))
 	auditRepo := repository.NewAdminAuditRepository(db.GetCollection("admin_audit_logs"))
@@ -64,6 +65,7 @@ func main() {
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
 	betaKeyService := services.NewBetaKeyService(betaKeyRepo, userService)
+	betaFeedbackService := services.NewBetaFeedbackService(betaFeedbackRepo, creditsService)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
 	usageService := services.NewUsageService(usageRepo) // Add usage service
 	planService := services.NewPlanService(planRepo)    // Add plan service
@@ -112,12 +114,13 @@ func main() {
 		Token:   handlers.NewTokenHandler(tokenService, creditsService, userService, adminService),
 		APIKey:  handlers.NewAPIKeyHandler(apiKeyService, userService),
 		BetaKey: handlers.NewBetaKeyHandler(betaKeyService, adminService),
+		BetaFeedback: handlers.NewBetaFeedbackHandler(betaFeedbackService, userService, adminService),
 		// These handlers don't have usage tracking yet - using original constructors
 		QRMasking:    handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
 		QRExtraction: handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
 		IDCropping:   handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
 		// SignatureVerification has usage tracking implemented
-		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, betaKeyService, usageService),
+		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, betaKeyService, betaFeedbackService, usageService),
 		// These handlers don't have usage tracking yet - using original constructors
 		FaceDetect:   handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService, usageService),
 		FaceVerify:   handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService, usageService),
