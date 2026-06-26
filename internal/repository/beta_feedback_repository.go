@@ -73,21 +73,22 @@ func (r *betaFeedbackRepository) GetPendingByUserAndService(ctx context.Context,
 
 func (r *betaFeedbackRepository) SubmitFeedback(ctx context.Context, id primitive.ObjectID, expected *models.BetaFeedbackExpectedResult, refundedCredits int) error {
 	now := time.Now()
+	update := bson.M{
+		"expectedResult":      expected,
+		"status":              models.BetaFeedbackStatusRefunded,
+		"creditsRefunded":     refundedCredits,
+		"feedbackSubmittedAt": now,
+	}
+	if refundedCredits > 0 {
+		update["refundedAt"] = now
+	}
 	result, err := r.collection.UpdateOne(
 		ctx,
 		bson.M{
 			"_id":    id,
 			"status": models.BetaFeedbackStatusPendingFeedback,
 		},
-		bson.M{
-			"$set": bson.M{
-				"expectedResult":      expected,
-				"status":              models.BetaFeedbackStatusRefunded,
-				"creditsRefunded":     refundedCredits,
-				"feedbackSubmittedAt": now,
-				"refundedAt":          now,
-			},
-		},
+		bson.M{"$set": update},
 	)
 	if err != nil {
 		return err

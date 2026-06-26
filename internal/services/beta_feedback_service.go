@@ -115,28 +115,41 @@ func (s *betaFeedbackService) SubmitFeedback(ctx context.Context, userID, email,
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "session is not eligible for refund")
 	}
 
-	if err := s.checkMonthlyRefundCap(ctx, userID, session.CreditsCharged); err != nil {
-		return nil, err
-	}
-
-	refundAmount := session.CreditsCharged
-	if err := s.repo.SubmitFeedback(ctx, objectID, expected, refundAmount); err != nil {
-		return nil, err
-	}
-
-	balance, err := s.creditsService.AddCredits(ctx, &models.AddCreditsRequest{
-		UserID: userID,
-		Amount: refundAmount,
-	})
+	refundAmount, err := s.refundableAmount(ctx, userID, session.CreditsCharged)
 	if err != nil {
 		return nil, err
 	}
 
+	if err := s.repo.SubmitFeedback(ctx, objectID, expected, refundAmount); err != nil {
+		return nil, err
+	}
+
+	var remainingCredits int
+	var message string
+	if refundAmount > 0 {
+		balance, err := s.creditsService.AddCredits(ctx, &models.AddCreditsRequest{
+			UserID: userID,
+			Amount: refundAmount,
+		})
+		if err != nil {
+			return nil, err
+		}
+		remainingCredits = balance.Credits
+		message = "Feedback submitted and credits refunded successfully"
+	} else {
+		balance, err := s.creditsService.GetBalance(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		remainingCredits = balance.Credits
+		message = "Feedback submitted successfully"
+	}
+
 	return &models.SubmitBetaFeedbackResponse{
-		Message:          "Feedback submitted and credits refunded successfully",
+		Message:          message,
 		SessionID:        sessionID,
 		CreditsRefunded:  refundAmount,
-		RemainingCredits: balance.Credits,
+		RemainingCredits: remainingCredits,
 	}, nil
 }
 
@@ -174,17 +187,21 @@ func (s *betaFeedbackService) ListSessions(ctx context.Context, serviceName stri
 	return result, nil
 }
 
-func (s *betaFeedbackService) checkMonthlyRefundCap(ctx context.Context, userID string, refundAmount int) error {
+func (s *betaFeedbackService) refundableAmount(ctx context.Context, userID string, requested int) (int, error) {
 	cap := monthlyRefundCap()
 	since := time.Now().AddDate(0, -1, 0)
 	total, err := s.repo.SumRefundedCreditsSince(ctx, userID, since)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if total+refundAmount > cap {
-		return apperrors.NewAppError(apperrors.ErrValidation, 400, "monthly beta feedback refund limit reached")
+	remaining := cap - total
+	if remaining <= 0 {
+		return 0, nil
 	}
-	return nil
+	if requested < remaining {
+		return requested, nil
+	}
+	return remaining, nil
 }
 
 func monthlyRefundCap() int {
