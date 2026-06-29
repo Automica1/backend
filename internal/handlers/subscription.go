@@ -49,7 +49,7 @@ func (h *SubscriptionHandler) CreateOrder(w http.ResponseWriter, r *http.Request
 		req.Email = email
 	}
 
-	response, err := h.subService.CreateOrder(r.Context(), userID, req.Email, name, contact, req.PlanID)
+	response, err := h.subService.CreateOrder(r.Context(), userID, req.Email, name, contact, req.PlanID, req.Currency)
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
@@ -136,13 +136,13 @@ func (h *SubscriptionHandler) CalculateUpgradePrice(w http.ResponseWriter, r *ht
 		return
 	}
 
-	price, err := h.subService.CalculateUpgradePrice(r.Context(), email, planID)
+	price, currency, err := h.subService.CalculateUpgradePrice(r.Context(), email, planID)
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
 	}
 
-	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{"price": price})
+	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{"price": price, "currency": currency})
 }
 
 func (h *SubscriptionHandler) CreateUpgradeOrder(w http.ResponseWriter, r *http.Request) {

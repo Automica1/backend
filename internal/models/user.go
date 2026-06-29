@@ -10,12 +10,13 @@ import (
 )
 
 type User struct {
-	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
-	UserID    string             `bson:"userId" json:"userId"`
-	Email     string             `bson:"email" json:"email"`
-	IsActive  bool               `bson:"isActive" json:"isActive"`
-	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
-	UpdatedAt time.Time          `bson:"updatedAt" json:"updatedAt"`
+	ID              primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	UserID          string             `bson:"userId" json:"userId"`
+	Email           string             `bson:"email" json:"email"`
+	BillingCurrency string             `bson:"billingCurrency,omitempty" json:"billingCurrency,omitempty"`
+	IsActive        bool               `bson:"isActive" json:"isActive"`
+	CreatedAt       time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt       time.Time          `bson:"updatedAt" json:"updatedAt"`
 }
 
 type RegisterUserRequest struct {

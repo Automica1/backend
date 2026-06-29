@@ -10,6 +10,7 @@ import (
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/repository"
 	apperrors "chi-mongo-backend/pkg/errors"
+	"chi-mongo-backend/pkg/billing"
 )
 
 type UserService interface {
@@ -26,6 +27,7 @@ type UserService interface {
 	DeleteUser(ctx context.Context, userID string) error
 	SuspendUser(ctx context.Context, userID string) error
 	ReactivateUser(ctx context.Context, userID string) error
+	SetBillingCurrency(ctx context.Context, userID, currency string) error
 }
 
 type userService struct {
@@ -327,4 +329,12 @@ func (s *userService) ReactivateUser(ctx context.Context, userID string) error {
 		return err
 	}
 	return s.userRepo.UpdateActiveStatus(ctx, userID, true)
+}
+
+func (s *userService) SetBillingCurrency(ctx context.Context, userID, currency string) error {
+	normalized := billing.NormalizeCurrency(currency)
+	if normalized == "" {
+		return apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid billing currency", "")
+	}
+	return s.userRepo.UpdateBillingCurrency(ctx, userID, normalized)
 }

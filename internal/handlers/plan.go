@@ -8,6 +8,7 @@ import (
 	"chi-mongo-backend/internal/middleware"
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/services"
+	"chi-mongo-backend/pkg/billing"
 	"chi-mongo-backend/pkg/utils"
 
 	"github.com/go-chi/chi/v5"
@@ -27,7 +28,12 @@ func NewPlanHandler(planService services.PlanService, adminService services.Admi
 
 // Public endpoints
 func (h *PlanHandler) GetActivePlans(w http.ResponseWriter, r *http.Request) {
-	plans, err := h.planService.GetActivePlans(r.Context())
+	currency := billing.NormalizeCurrency(r.URL.Query().Get("currency"))
+	if currency == "" {
+		currency = billing.CurrencyUSD
+	}
+
+	plans, err := h.planService.GetActivePlans(r.Context(), currency)
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return
@@ -37,7 +43,9 @@ func (h *PlanHandler) GetActivePlans(w http.ResponseWriter, r *http.Request) {
 
 func (h *PlanHandler) GetPublicBillingConfig(w http.ResponseWriter, r *http.Request) {
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
-		"razorpayKeyId": os.Getenv("RAZORPAY_KEY_ID"),
+		"razorpayKeyId":         os.Getenv("RAZORPAY_KEY_ID"),
+		"supportedCurrencies":   billing.SupportedCurrencies,
+		"defaultCurrency":       billing.CurrencyUSD,
 	})
 }
 

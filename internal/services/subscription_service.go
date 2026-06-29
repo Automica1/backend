@@ -17,6 +17,7 @@ import (
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/repository"
 	apperrors "chi-mongo-backend/pkg/errors"
+	"chi-mongo-backend/pkg/billing"
 
 	"github.com/razorpay/razorpay-go"
 )
@@ -89,11 +90,11 @@ func (g *razorpayGateway) FetchSubscription(subscriptionID string) (map[string]i
 }
 
 type SubscriptionService interface {
-	CreateOrder(ctx context.Context, userID, email, name, contact, planID string) (*models.SubscriptionResponse, error)
+	CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency string) (*models.SubscriptionResponse, error)
 	VerifyPayment(ctx context.Context, userID string, req *models.VerifyPaymentRequest) (*models.SubscriptionResponse, error)
 	GetSubscriptionStatus(ctx context.Context, userID string) (*models.Subscription, error)
 	CreateUpgradeOrder(ctx context.Context, userID, newPlanID string) (*models.SubscriptionResponse, error)
-	CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, error)
+	CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error)
 	DowngradeSubscription(ctx context.Context, userID, newPlanID string) error
 	CancelSubscription(ctx context.Context, userID string) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
@@ -131,7 +132,26 @@ func NewSubscriptionService(subRepo repository.SubscriptionRepository, creditsSe
 	}
 }
 
-func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, name, contact, planID string) (*models.SubscriptionResponse, error) {
+func (s *subscriptionService) resolveBillingCurrency(ctx context.Context, userID, requestedCurrency, contact string) string {
+	var subscriptionCurrency, userCurrency string
+
+	if sub, err := s.subRepo.GetByUserID(ctx, userID); err == nil && sub != nil {
+		subscriptionCurrency = sub.Currency
+	}
+
+	if user, err := s.userService.GetUserByEmail(ctx, userID); err == nil && user != nil {
+		userCurrency = user.BillingCurrency
+	}
+
+	return billing.ResolveBillingCurrency(billing.CurrencyInput{
+		SubscriptionCurrency: subscriptionCurrency,
+		UserBillingCurrency:  userCurrency,
+		RequestedCurrency:    requestedCurrency,
+		Contact:              contact,
+	})
+}
+
+func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency string) (*models.SubscriptionResponse, error) {
 	// Fetch plan details from DB
 	plan, err := s.planService.GetPlanByID(ctx, planID)
 	if err != nil {
@@ -142,12 +162,14 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "plan is not active", "")
 	}
 
-	if plan.RazorpayPlanID == "" {
-		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "plan is not configured for automated billing (missing Razorpay Plan ID)", "")
+	currency := s.resolveBillingCurrency(ctx, userID, requestedCurrency, contact)
+	amount, razorpayPlanID, ok := billing.ResolvePlanPricing(plan, currency)
+	if !ok {
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "plan is not configured for automated billing in "+currency, "")
 	}
 
 	params := map[string]interface{}{
-		"plan_id":         plan.RazorpayPlanID,
+		"plan_id":         razorpayPlanID,
 		"total_count":     120, // 10 years of monthly cycles
 		"quantity":        1,
 		"customer_notify": 1,
@@ -193,7 +215,7 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 		}
 	}
 
-	fmt.Printf("[CreateOrder] Creating Razorpay Subscription for plan %s (RazorpayID: %s)\n", planID, plan.RazorpayPlanID)
+	fmt.Printf("[CreateOrder] Creating Razorpay Subscription for plan %s (RazorpayID: %s, currency: %s)\n", planID, razorpayPlanID, currency)
 
 	body, err := s.razorpay.CreateSubscription(params)
 	if err != nil {
@@ -211,8 +233,8 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 		Email:          email,
 		Status:         models.SubscriptionStatusCreated,
 		PlanID:         plan.PlanID,
-		Amount:         plan.Price,
-		Currency:       "USD",
+		Amount:         amount,
+		Currency:       currency,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -224,8 +246,8 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 	return &models.SubscriptionResponse{
 		Message:        "Subscription order created successfully",
 		SubscriptionID: subID,
-		Amount:         plan.Price,
-		Currency:       "USD",
+		Amount:         amount,
+		Currency:       currency,
 	}, nil
 }
 
@@ -282,7 +304,7 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		// Fetch full plan to get the real monthly price (not the prorated one)
 		newPlan, _ := s.planService.GetPlanByID(ctx, sub.PlanID)
 		if newPlan != nil {
-			activeSub.Amount = newPlan.Price
+			activeSub.Amount = billing.PlanAmountInCurrency(newPlan, activeSub.Currency)
 		}
 
 		activeSub.UpdatedAt = time.Now()
@@ -351,6 +373,10 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		return nil, err
 	}
 
+	if sub.Currency != "" {
+		_ = s.userService.SetBillingCurrency(ctx, user.UserID, sub.Currency)
+	}
+
 	// Send confirmation email (fire-and-forget)
 	if plan != nil {
 		nextBilling := sub.CurrentPeriodEnd
@@ -368,31 +394,42 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 	}, nil
 }
 
-func (s *subscriptionService) CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, error) {
+func (s *subscriptionService) CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error) {
 	// 1. Get current subscription
 	sub, err := s.subRepo.GetByUserID(ctx, userID)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	if sub.Status != models.SubscriptionStatusActive {
-		return 0, apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription to upgrade", "")
+		return 0, "", apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription to upgrade", "")
+	}
+
+	currency := sub.Currency
+	if currency == "" {
+		currency = billing.CurrencyUSD
 	}
 
 	// 2. Get new plan details
 	newPlan, err := s.planService.GetPlanByID(ctx, newPlanID)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	// 3. Get current plan details (to check if it's actually an upgrade)
 	currentPlan, err := s.planService.GetPlanByID(ctx, sub.PlanID)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
-	if newPlan.Price <= currentPlan.Price {
-		return 0, apperrors.NewAppError(apperrors.ErrBadRequest, 400, "new plan price must be higher for upgrade", "")
+	newAmount := billing.PlanAmountInCurrency(newPlan, currency)
+	currentAmount := billing.PlanAmountInCurrency(currentPlan, currency)
+	if newAmount <= 0 || currentAmount <= 0 {
+		return 0, "", apperrors.NewAppError(apperrors.ErrBadRequest, 400, "plan pricing is not configured for "+currency, "")
+	}
+
+	if newAmount <= currentAmount {
+		return 0, "", apperrors.NewAppError(apperrors.ErrBadRequest, 400, "new plan price must be higher for upgrade", "")
 	}
 
 	// 4. Calculate proration
@@ -402,27 +439,27 @@ func (s *subscriptionService) CalculateUpgradePrice(ctx context.Context, userID,
 	remainingDuration := sub.CurrentPeriodEnd.Sub(now)
 
 	if remainingDuration <= 0 {
-		return newPlan.Price, nil
+		return newAmount, currency, nil
 	}
 
 	// Prorated amount = (New Plan Price - Current Plan Price) * (Remaining Time / Total Time)
-	priceDiff := newPlan.Price - currentPlan.Price
+	priceDiff := newAmount - currentAmount
 	proratedDiff := int(float64(priceDiff) * (remainingDuration.Hours() / totalDuration.Hours()))
 
-	fmt.Printf("[CalculateUpgradePrice] User: %s, CurrentPlan: %s ($%d), NewPlan: %s ($%d), Time: %.2f/%.2f hrs, Price: %d\n",
-		userID, currentPlan.PlanID, currentPlan.Price, newPlan.PlanID, newPlan.Price, remainingDuration.Hours(), totalDuration.Hours(), proratedDiff)
+	fmt.Printf("[CalculateUpgradePrice] User: %s, CurrentPlan: %s (%s %d), NewPlan: %s (%s %d), Time: %.2f/%.2f hrs, Price: %d\n",
+		userID, currentPlan.PlanID, currency, currentAmount, newPlan.PlanID, currency, newAmount, remainingDuration.Hours(), totalDuration.Hours(), proratedDiff)
 
-	// Minimum charge (e.g., $1.00) to avoid processing tiny amounts if near end of cycle
-	if proratedDiff < 100 {
-		proratedDiff = 100
+	minCharge := billing.MinimumCharge(currency)
+	if proratedDiff < minCharge {
+		proratedDiff = minCharge
 	}
 
-	return proratedDiff, nil
+	return proratedDiff, currency, nil
 }
 
 func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, newPlanID string) (*models.SubscriptionResponse, error) {
 	fmt.Printf("[CreateUpgradeOrder] Starting for User: %s, NewPlan: %s\n", userID, newPlanID)
-	price, err := s.CalculateUpgradePrice(ctx, userID, newPlanID)
+	price, currency, err := s.CalculateUpgradePrice(ctx, userID, newPlanID)
 	if err != nil {
 		fmt.Printf("[CreateUpgradeOrder] CalculateUpgradePrice failed: %v\n", err)
 		return nil, err
@@ -431,7 +468,7 @@ func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, ne
 	// Create Razorpay order for the prorated amount
 	params := map[string]interface{}{
 		"amount":   price,
-		"currency": "USD",
+		"currency": currency,
 		"receipt":  fmt.Sprintf("upg_%d", time.Now().Unix()),
 		"notes": map[string]string{
 			"type":      "upgrade",
@@ -466,7 +503,7 @@ func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, ne
 		Status:         "upgrading", // Special status
 		PlanID:         newPlanID,
 		Amount:         price,
-		Currency:       "USD",
+		Currency:       currency,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -479,7 +516,7 @@ func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, ne
 		Message:  "Upgrade order created successfully",
 		OrderID:  orderID,
 		Amount:   price,
-		Currency: "USD",
+		Currency: currency,
 	}, nil
 }
 
@@ -689,7 +726,19 @@ func (s *subscriptionService) decorateSubscriptions(ctx context.Context, subs []
 		}
 		if info, ok := planNames[sub.PlanID]; ok {
 			item.PlanName = info.Name
-			item.PlanRazorpayID = info.RazorpayPlan
+			currency := sub.Currency
+			if currency == "" {
+				currency = billing.CurrencyUSD
+			}
+			if fullPlan, planErr := s.planService.GetPlanByID(ctx, sub.PlanID); planErr == nil && fullPlan != nil {
+				if _, razorpayID, ok := billing.ResolvePlanPricing(fullPlan, currency); ok {
+					item.PlanRazorpayID = razorpayID
+				} else {
+					item.PlanRazorpayID = info.RazorpayPlan
+				}
+			} else {
+				item.PlanRazorpayID = info.RazorpayPlan
+			}
 		}
 		result = append(result, item)
 	}

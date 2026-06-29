@@ -364,12 +364,22 @@ func (f *fakePlanService) CreatePlan(ctx context.Context, req *models.CreatePlan
 	return &models.Plan{}, nil
 }
 
-func (f *fakePlanService) GetActivePlans(ctx context.Context) ([]models.Plan, error) {
+func (f *fakePlanService) GetActivePlans(ctx context.Context, currency string) ([]models.Plan, error) {
 	return nil, nil
 }
 
 func (f *fakePlanService) GetPlanByID(ctx context.Context, planID string) (*models.Plan, error) {
-	return &models.Plan{PlanID: planID, Name: "Pro", RazorpayPlanID: "rp_pro"}, nil
+	return &models.Plan{
+		PlanID:         planID,
+		Name:           "Pro",
+		IsActive:       true,
+		RazorpayPlanID: "rp_pro_usd",
+		Price:          9900,
+		Pricing: map[string]models.PlanCurrencyPricing{
+			"USD": {Amount: 9900, RazorpayPlanID: "rp_pro_usd"},
+			"INR": {Amount: 799900, RazorpayPlanID: "rp_pro_inr"},
+		},
+	}, nil
 }
 
 func (f *fakePlanService) GetAllPlans(ctx context.Context) ([]models.Plan, error) {
@@ -523,4 +533,114 @@ func (f *fakeCreditsService) DeductCredits(ctx context.Context, req *models.Dedu
 
 func (f *fakeCreditsService) GetBalance(ctx context.Context, userID string) (*models.CreditsResponse, error) {
 	return &models.CreditsResponse{UserID: userID, Credits: 0}, nil
+}
+
+type fakeUserService struct {
+	billingCurrency string
+}
+
+func (f *fakeUserService) RegisterUser(ctx context.Context, req *models.RegisterUserRequest) (*models.RegisterUserResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	return &models.User{UserID: email, Email: email, BillingCurrency: f.billingCurrency}, nil
+}
+
+func (f *fakeUserService) GetOrCreateUser(ctx context.Context, email string) (*models.User, error) {
+	return &models.User{UserID: email, Email: email, BillingCurrency: f.billingCurrency}, nil
+}
+
+func (f *fakeUserService) GetAllUsers(ctx context.Context) (*models.AdminUserListResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) ListUsers(ctx context.Context, query models.AdminListQuery) (*models.AdminUserListResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) GetUserByID(ctx context.Context, userID string) (*models.AdminUserDetailResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) GetUserStats(ctx context.Context) (*models.UserStatsResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) GetUserActivity(ctx context.Context, userID string) (*models.UserActivityResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) GetUserCredits(ctx context.Context, userID string) (*models.UserCreditsResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeUserService) DeleteUser(ctx context.Context, userID string) error {
+	return nil
+}
+
+func (f *fakeUserService) SuspendUser(ctx context.Context, userID string) error {
+	return nil
+}
+
+func (f *fakeUserService) ReactivateUser(ctx context.Context, userID string) error {
+	return nil
+}
+
+func (f *fakeUserService) SetBillingCurrency(ctx context.Context, userID, currency string) error {
+	f.billingCurrency = currency
+	return nil
+}
+
+func TestCreateOrderUsesINRForIndianPhone(t *testing.T) {
+	repo := newFakeSubscriptionRepo()
+	gateway := &fakeRazorpayGateway{}
+	planSvc := &fakePlanService{}
+	userSvc := &fakeUserService{}
+	svc := &subscriptionService{
+		subRepo:     repo,
+		razorpay:    gateway,
+		planService: planSvc,
+		userService: userSvc,
+	}
+
+	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "+919876543210", "pro", "")
+	if err != nil {
+		t.Fatalf("CreateOrder returned error: %v", err)
+	}
+	if resp.Currency != "INR" {
+		t.Fatalf("expected INR currency, got %s", resp.Currency)
+	}
+	if resp.Amount != 799900 {
+		t.Fatalf("expected INR amount 799900, got %d", resp.Amount)
+	}
+
+	created := repo.subs[resp.SubscriptionID]
+	if created == nil || created.Currency != "INR" {
+		t.Fatalf("expected created subscription currency INR, got %#v", created)
+	}
+}
+
+func TestCreateOrderDefaultsToUSD(t *testing.T) {
+	repo := newFakeSubscriptionRepo()
+	gateway := &fakeRazorpayGateway{}
+	planSvc := &fakePlanService{}
+	userSvc := &fakeUserService{}
+	svc := &subscriptionService{
+		subRepo:     repo,
+		razorpay:    gateway,
+		planService: planSvc,
+		userService: userSvc,
+	}
+
+	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "", "pro", "")
+	if err != nil {
+		t.Fatalf("CreateOrder returned error: %v", err)
+	}
+	if resp.Currency != "USD" {
+		t.Fatalf("expected USD currency, got %s", resp.Currency)
+	}
+	if resp.Amount != 9900 {
+		t.Fatalf("expected USD amount 9900, got %d", resp.Amount)
+	}
 }

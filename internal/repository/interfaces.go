@@ -14,6 +14,7 @@ type UserRepository interface {
 	IsSuspendedByEmail(ctx context.Context, email string) (bool, error)
 	Delete(ctx context.Context, userID string) error
 	UpdateActiveStatus(ctx context.Context, userID string, isActive bool) error
+	UpdateBillingCurrency(ctx context.Context, userID string, currency string) error
 	// Admin methods
 	GetAll(ctx context.Context) ([]models.User, error)
 	GetTotalCount(ctx context.Context) (int64, error)

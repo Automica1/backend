@@ -39,7 +39,8 @@ type Subscription struct {
 }
 
 type CreateSubscriptionRequest struct {
-	PlanID string `json:"planId" validate:"required"`
+	PlanID   string `json:"planId" validate:"required"`
+	Currency string `json:"currency,omitempty"`
 	// Optional customer details to create a Razorpay Customer server-side
 	Name    string `json:"name,omitempty"`
 	Email   string `json:"email,omitempty"`

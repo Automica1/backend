@@ -6,13 +6,15 @@ import (
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/repository"
+	"chi-mongo-backend/pkg/billing"
+	apperrors "chi-mongo-backend/pkg/errors"
 
 	"go.mongodb.org/mongo-driver/bson"
 )
 
 type PlanService interface {
 	CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error)
-	GetActivePlans(ctx context.Context) ([]models.Plan, error)
+	GetActivePlans(ctx context.Context, currency string) ([]models.Plan, error)
 	GetAllPlans(ctx context.Context) ([]models.Plan, error)
 	GetPlanByID(ctx context.Context, planID string) (*models.Plan, error)
 	UpdatePlan(ctx context.Context, planID string, req *models.UpdatePlanRequest) error
@@ -29,16 +31,61 @@ func NewPlanService(planRepo repository.PlanRepository) PlanService {
 	}
 }
 
-func (s *planService) CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error) {
-	plan := &models.Plan{
-		PlanID:         req.PlanID,
-		RazorpayPlanID: req.RazorpayPlanID,
-		Name:           req.Name,
-		Description:    req.Description,
-		Price:          req.Price,
-		Credits:        req.Credits,
-		IsActive:       req.IsActive,
+func buildPricingFromCreate(req *models.CreatePlanRequest) map[string]models.PlanCurrencyPricing {
+	pricing := map[string]models.PlanCurrencyPricing{}
+	for currency, item := range req.Pricing {
+		if normalized := billing.NormalizeCurrency(currency); normalized != "" && item.Amount > 0 && item.RazorpayPlanID != "" {
+			pricing[normalized] = item
+		}
 	}
+
+	if req.PriceUSD > 0 && req.RazorpayPlanIDUSD != "" {
+		pricing[billing.CurrencyUSD] = models.PlanCurrencyPricing{
+			Amount:         req.PriceUSD,
+			RazorpayPlanID: req.RazorpayPlanIDUSD,
+		}
+	} else if req.Price > 0 && req.RazorpayPlanID != "" {
+		pricing[billing.CurrencyUSD] = models.PlanCurrencyPricing{
+			Amount:         req.Price,
+			RazorpayPlanID: req.RazorpayPlanID,
+		}
+	}
+
+	if req.PriceINR > 0 && req.RazorpayPlanIDINR != "" {
+		pricing[billing.CurrencyINR] = models.PlanCurrencyPricing{
+			Amount:         req.PriceINR,
+			RazorpayPlanID: req.RazorpayPlanIDINR,
+		}
+	}
+
+	return pricing
+}
+
+func applyLegacyUSDFields(plan *models.Plan) {
+	if plan.Pricing == nil {
+		return
+	}
+	if usd, ok := plan.Pricing[billing.CurrencyUSD]; ok {
+		plan.Price = usd.Amount
+		plan.RazorpayPlanID = usd.RazorpayPlanID
+	}
+}
+
+func (s *planService) CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error) {
+	pricing := buildPricingFromCreate(req)
+	if len(pricing) == 0 {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "at least one currency pricing configuration is required", "")
+	}
+
+	plan := &models.Plan{
+		PlanID:      req.PlanID,
+		Name:        req.Name,
+		Description: req.Description,
+		Credits:     req.Credits,
+		IsActive:    req.IsActive,
+		Pricing:     pricing,
+	}
+	applyLegacyUSDFields(plan)
 
 	err := s.planRepo.Create(ctx, plan)
 	if err != nil {
@@ -48,8 +95,21 @@ func (s *planService) CreatePlan(ctx context.Context, req *models.CreatePlanRequ
 	return plan, nil
 }
 
-func (s *planService) GetActivePlans(ctx context.Context) ([]models.Plan, error) {
-	return s.planRepo.GetAll(ctx, true)
+func (s *planService) GetActivePlans(ctx context.Context, currency string) ([]models.Plan, error) {
+	plans, err := s.planRepo.GetAll(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+
+	resolved := make([]models.Plan, 0, len(plans))
+	for _, plan := range plans {
+		view, ok := billing.ToResolvedPlan(plan, currency)
+		if !ok {
+			continue
+		}
+		resolved = append(resolved, view)
+	}
+	return resolved, nil
 }
 
 func (s *planService) GetAllPlans(ctx context.Context) ([]models.Plan, error) {
@@ -79,6 +139,43 @@ func (s *planService) UpdatePlan(ctx context.Context, planID string, req *models
 	}
 	if req.RazorpayPlanID != nil {
 		updates["razorpayPlanId"] = *req.RazorpayPlanID
+	}
+	if req.Pricing != nil {
+		updates["pricing"] = req.Pricing
+	}
+
+	if req.PriceUSD != nil || req.RazorpayPlanIDUSD != nil || req.PriceINR != nil || req.RazorpayPlanIDINR != nil {
+		existing, err := s.planRepo.GetByPlanID(ctx, planID)
+		if err != nil {
+			return err
+		}
+		pricing := existing.Pricing
+		if pricing == nil {
+			pricing = map[string]models.PlanCurrencyPricing{}
+		}
+		if req.PriceUSD != nil || req.RazorpayPlanIDUSD != nil {
+			usd := pricing[billing.CurrencyUSD]
+			if req.PriceUSD != nil {
+				usd.Amount = *req.PriceUSD
+			}
+			if req.RazorpayPlanIDUSD != nil {
+				usd.RazorpayPlanID = *req.RazorpayPlanIDUSD
+			}
+			pricing[billing.CurrencyUSD] = usd
+			updates["price"] = usd.Amount
+			updates["razorpayPlanId"] = usd.RazorpayPlanID
+		}
+		if req.PriceINR != nil || req.RazorpayPlanIDINR != nil {
+			inr := pricing[billing.CurrencyINR]
+			if req.PriceINR != nil {
+				inr.Amount = *req.PriceINR
+			}
+			if req.RazorpayPlanIDINR != nil {
+				inr.RazorpayPlanID = *req.RazorpayPlanIDINR
+			}
+			pricing[billing.CurrencyINR] = inr
+		}
+		updates["pricing"] = pricing
 	}
 
 	if len(updates) == 0 {
