@@ -28,6 +28,7 @@ type UserService interface {
 	SuspendUser(ctx context.Context, userID string) error
 	ReactivateUser(ctx context.Context, userID string) error
 	SetBillingCurrency(ctx context.Context, userID, currency string) error
+	ClearBillingCurrency(ctx context.Context, userID string) error
 }
 
 type userService struct {
@@ -337,4 +338,8 @@ func (s *userService) SetBillingCurrency(ctx context.Context, userID, currency s
 		return apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid billing currency", "")
 	}
 	return s.userRepo.UpdateBillingCurrency(ctx, userID, normalized)
+}
+
+func (s *userService) ClearBillingCurrency(ctx context.Context, userID string) error {
+	return s.userRepo.ClearBillingCurrency(ctx, userID)
 }

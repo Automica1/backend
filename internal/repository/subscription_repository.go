@@ -18,6 +18,8 @@ type SubscriptionRepository interface {
 	GetByUserID(ctx context.Context, userID string) (*models.Subscription, error)
 	GetByUserIDAndStatus(ctx context.Context, userID string, status models.SubscriptionStatus) (*models.Subscription, error)
 	GetBySubscriptionID(ctx context.Context, subID string) (*models.Subscription, error)
+	ListAllByUserID(ctx context.Context, userID string) ([]models.Subscription, error)
+	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 	List(ctx context.Context, query models.AdminSubscriptionQuery) ([]models.Subscription, int64, error)
 	Update(ctx context.Context, sub *models.Subscription) error
 	UpdateStatus(ctx context.Context, subID string, status models.SubscriptionStatus) error
@@ -88,6 +90,28 @@ func (r *subscriptionRepository) GetByUserIDAndStatus(ctx context.Context, userI
 		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to get subscription by status", err.Error())
 	}
 	return &sub, nil
+}
+
+func (r *subscriptionRepository) ListAllByUserID(ctx context.Context, userID string) ([]models.Subscription, error) {
+	cursor, err := r.collection.Find(ctx, bson.M{"userId": userID}, options.Find().SetSort(bson.D{{Key: "updatedAt", Value: -1}}))
+	if err != nil {
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to list user subscriptions", err.Error())
+	}
+	defer cursor.Close(ctx)
+
+	var subs []models.Subscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to decode user subscriptions", err.Error())
+	}
+	return subs, nil
+}
+
+func (r *subscriptionRepository) DeleteByUserID(ctx context.Context, userID string) (int64, error) {
+	result, err := r.collection.DeleteMany(ctx, bson.M{"userId": userID})
+	if err != nil {
+		return 0, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to delete user subscriptions", err.Error())
+	}
+	return result.DeletedCount, nil
 }
 
 func (r *subscriptionRepository) GetBySubscriptionID(ctx context.Context, subID string) (*models.Subscription, error) {

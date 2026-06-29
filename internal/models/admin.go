@@ -100,6 +100,25 @@ type AdminSubscriptionDetailResponse struct {
 	Subscription AdminSubscription `json:"subscription"`
 }
 
+type AdminSubscriptionTestResetCapabilitiesResponse struct {
+	Message   string `json:"message"`
+	Enabled   bool   `json:"enabled"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type AdminSubscriptionTestResetRequest struct {
+	Confirm string `json:"confirm"`
+}
+
+type AdminSubscriptionTestResetResponse struct {
+	Message                string   `json:"message"`
+	UserID                 string   `json:"userId"`
+	Email                  string   `json:"email"`
+	RazorpayCancelled      []string `json:"razorpayCancelled"`
+	LocalRecordsDeleted    int64    `json:"localRecordsDeleted"`
+	BillingCurrencyCleared bool     `json:"billingCurrencyCleared"`
+}
+
 type AdminSubscriptionQuery struct {
 	Limit          int    `json:"limit"`
 	Skip           int    `json:"skip"`

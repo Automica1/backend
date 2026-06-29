@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,8 @@ type SubscriptionService interface {
 	ListAdminSubscriptions(ctx context.Context, query models.AdminSubscriptionQuery) (*models.AdminSubscriptionListResponse, error)
 	GetAdminSubscription(ctx context.Context, subscriptionID string) (*models.AdminSubscriptionDetailResponse, error)
 	ReconcileAdminSubscription(ctx context.Context, subscriptionID string) (*models.AdminSubscriptionDetailResponse, error)
+	SubscriptionTestResetEnabled() (bool, string)
+	ResetSubscriptionForTesting(ctx context.Context, subscriptionID, confirm string) (*models.AdminSubscriptionTestResetResponse, error)
 	HandleWebhookRaw(ctx context.Context, rawPayload []byte, signature string) error
 	HandleWebhook(ctx context.Context, payload *models.WebhookPayload, signature string) error
 }
@@ -694,6 +697,99 @@ func (s *subscriptionService) ReconcileAdminSubscription(ctx context.Context, su
 		Message:      "Subscription reconciled successfully",
 		Subscription: converted[0],
 	}, nil
+}
+
+func (s *subscriptionService) SubscriptionTestResetEnabled() (bool, string) {
+	if billing.SubscriptionTestResetAllowed(s.razorpayKey) {
+		return true, ""
+	}
+	if strings.TrimSpace(os.Getenv("ALLOW_SUBSCRIPTION_TEST_RESET")) == "1" {
+		return false, "Razorpay test keys are required for subscription test reset"
+	}
+	return false, "Subscription test reset is disabled in this environment"
+}
+
+func (s *subscriptionService) ResetSubscriptionForTesting(ctx context.Context, subscriptionID, confirm string) (*models.AdminSubscriptionTestResetResponse, error) {
+	enabled, reason := s.SubscriptionTestResetEnabled()
+	if !enabled {
+		return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "subscription test reset is not available", reason)
+	}
+	if strings.TrimSpace(confirm) != "RESET" {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, `confirmation must be "RESET"`, "")
+	}
+	if strings.TrimSpace(subscriptionID) == "" {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "subscriptionId is required", "")
+	}
+
+	sub, err := s.subRepo.GetBySubscriptionID(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+
+	records, err := s.subRepo.ListAllByUserID(ctx, sub.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	cancelled := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, record := range records {
+		rpID := strings.TrimSpace(record.SubscriptionID)
+		if rpID == "" || !strings.HasPrefix(rpID, "sub_") {
+			continue
+		}
+		if _, ok := seen[rpID]; ok {
+			continue
+		}
+		seen[rpID] = struct{}{}
+
+		if err := s.cancelRazorpaySubscriptionImmediately(rpID); err != nil {
+			fmt.Printf("[ResetSubscriptionForTesting] Razorpay cancel failed for %s: %v\n", rpID, err)
+			continue
+		}
+		cancelled = append(cancelled, rpID)
+	}
+
+	deleted, err := s.subRepo.DeleteByUserID(ctx, sub.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	billingCleared := false
+	if err := s.userService.ClearBillingCurrency(ctx, sub.UserID); err != nil {
+		if !apperrors.IsErrorType(err, apperrors.ErrNotFound) {
+			return nil, err
+		}
+	} else {
+		billingCleared = true
+	}
+
+	return &models.AdminSubscriptionTestResetResponse{
+		Message:                "Subscription reset for testing completed",
+		UserID:                 sub.UserID,
+		Email:                  sub.Email,
+		RazorpayCancelled:      cancelled,
+		LocalRecordsDeleted:    deleted,
+		BillingCurrencyCleared: billingCleared,
+	}, nil
+}
+
+func (s *subscriptionService) cancelRazorpaySubscriptionImmediately(subscriptionID string) error {
+	remote, err := s.razorpay.FetchSubscription(subscriptionID)
+	if err != nil {
+		return err
+	}
+
+	status, _ := remote["status"].(string)
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "completed", "expired", "halted":
+		return nil
+	}
+
+	_, err = s.razorpay.CancelSubscription(subscriptionID, map[string]interface{}{
+		"cancel_at_cycle_end": 0,
+	})
+	return err
 }
 
 func (s *subscriptionService) decorateSubscriptions(ctx context.Context, subs []models.Subscription) ([]models.AdminSubscription, error) {

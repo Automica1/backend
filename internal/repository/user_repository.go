@@ -130,6 +130,24 @@ func (r *userRepository) UpdateBillingCurrency(ctx context.Context, userID strin
 	return nil
 }
 
+func (r *userRepository) ClearBillingCurrency(ctx context.Context, userID string) error {
+	update := bson.M{
+		"$unset": bson.M{"billingCurrency": ""},
+		"$set": bson.M{
+			"updatedAt": time.Now(),
+		},
+	}
+
+	result, err := r.collection.UpdateOne(ctx, bson.M{"userId": userID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return apperrors.NewUserNotFoundError()
+	}
+	return nil
+}
+
 // Admin methods
 func (r *userRepository) GetAll(ctx context.Context) ([]models.User, error) {
 	cursor, err := r.collection.Find(ctx, bson.M{})

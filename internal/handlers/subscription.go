@@ -266,6 +266,47 @@ func (h *SubscriptionHandler) ReconcileAdminSubscription(w http.ResponseWriter, 
 	utils.SendJSONResponse(w, http.StatusOK, response)
 }
 
+func (h *SubscriptionHandler) GetSubscriptionTestResetCapabilities(w http.ResponseWriter, r *http.Request) {
+	enabled, reason := h.subService.SubscriptionTestResetEnabled()
+	utils.SendJSONResponse(w, http.StatusOK, models.AdminSubscriptionTestResetCapabilitiesResponse{
+		Message: "Subscription test reset capabilities retrieved successfully",
+		Enabled: enabled,
+		Reason:  reason,
+	})
+}
+
+func (h *SubscriptionHandler) ResetAdminSubscriptionForTesting(w http.ResponseWriter, r *http.Request) {
+	subscriptionID := chi.URLParam(r, "subscriptionId")
+	if subscriptionID == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, 400, "subscriptionId is required", ""))
+		return
+	}
+
+	var req models.AdminSubscriptionTestResetRequest
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	response, err := h.subService.ResetSubscriptionForTesting(r.Context(), subscriptionID, req.Confirm)
+	if err != nil {
+		h.recordAdminSubscriptionAction(r, "subscription_test_reset", subscriptionID, "failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	h.recordAdminSubscriptionAction(r, "subscription_test_reset", subscriptionID, "success", map[string]interface{}{
+		"userId":              response.UserID,
+		"email":               response.Email,
+		"razorpayCancelled":   response.RazorpayCancelled,
+		"localRecordsDeleted": response.LocalRecordsDeleted,
+	})
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
 func (h *SubscriptionHandler) GetActiveCount(w http.ResponseWriter, r *http.Request) {
 	count, err := h.subService.GetActiveSubscriptionCount(r.Context())
 	if err != nil {

@@ -201,8 +201,10 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Route("/subscriptions", func(r chi.Router) {
 					r.Get("/", h.Subscription.GetAdminSubscriptions)
 					r.Get("/active-count", h.Subscription.GetActiveCount)
+					r.Get("/test-reset/capabilities", h.Subscription.GetSubscriptionTestResetCapabilities)
 					r.Get("/{subscriptionId}", h.Subscription.GetAdminSubscription)
 					r.Post("/{subscriptionId}/reconcile", h.Subscription.ReconcileAdminSubscription)
+					r.Post("/{subscriptionId}/test-reset", h.Subscription.ResetAdminSubscriptionForTesting)
 				})
 
 				// Admin intelligence and logs

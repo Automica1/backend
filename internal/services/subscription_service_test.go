@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +168,27 @@ func (r *fakeSubscriptionRepo) GetBySubscriptionID(ctx context.Context, subID st
 	return &copied, nil
 }
 
+func (r *fakeSubscriptionRepo) ListAllByUserID(ctx context.Context, userID string) ([]models.Subscription, error) {
+	result := make([]models.Subscription, 0)
+	for _, sub := range r.subs {
+		if sub.UserID == userID {
+			result = append(result, *sub)
+		}
+	}
+	return result, nil
+}
+
+func (r *fakeSubscriptionRepo) DeleteByUserID(ctx context.Context, userID string) (int64, error) {
+	var deleted int64
+	for id, sub := range r.subs {
+		if sub.UserID == userID {
+			delete(r.subs, id)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
 func (r *fakeSubscriptionRepo) List(ctx context.Context, query models.AdminSubscriptionQuery) ([]models.Subscription, int64, error) {
 	result := make([]models.Subscription, 0)
 	for _, sub := range r.subs {
@@ -241,9 +263,10 @@ func newTestSubscriptionService(repo *fakeSubscriptionRepo, gateway RazorpayGate
 		paymentEventRepo: newFakePaymentEventRepo(),
 		emailService:     emailSvc,
 		razorpay:         gateway,
+		razorpayKey:      "rzp_test_fake",
 		creditsService:   &fakeCreditsService{},
 		planService:      &fakePlanService{},
-		userService:      &fakeUserService{},
+		userService:      &fakeUserService{billingCurrency: "INR"},
 	}
 }
 
@@ -638,6 +661,11 @@ func (f *fakeUserService) SetBillingCurrency(ctx context.Context, userID, curren
 	return nil
 }
 
+func (f *fakeUserService) ClearBillingCurrency(ctx context.Context, userID string) error {
+	f.billingCurrency = ""
+	return nil
+}
+
 func TestCreateOrderUsesINRForIndianPhone(t *testing.T) {
 	repo := newFakeSubscriptionRepo()
 	gateway := &fakeRazorpayGateway{}
@@ -784,5 +812,50 @@ func TestWebhookSubscriptionChargedIsIdempotent(t *testing.T) {
 	}
 	if credits.added != 9000 {
 		t.Fatalf("expected credits added once (9000), got %d", credits.added)
+	}
+}
+
+func TestResetSubscriptionForTestingRequiresEnvAndTestKey(t *testing.T) {
+	t.Setenv("ALLOW_SUBSCRIPTION_TEST_RESET", "1")
+	t.Cleanup(func() {
+		_ = os.Unsetenv("ALLOW_SUBSCRIPTION_TEST_RESET")
+	})
+
+	repo := newFakeSubscriptionRepo(&models.Subscription{
+		SubscriptionID: "sub_reset_1",
+		UserID:         "user@example.com",
+		Email:          "user@example.com",
+		Status:         models.SubscriptionStatusActive,
+	})
+	gateway := &fakeRazorpayGateway{}
+	svc := newTestSubscriptionService(repo, gateway, &fakeEmailService{})
+
+	_, err := svc.ResetSubscriptionForTesting(context.Background(), "sub_reset_1", "RESET")
+	if err != nil {
+		t.Fatalf("expected reset to succeed, got %v", err)
+	}
+	if len(gateway.cancelCalls) != 1 {
+		t.Fatalf("expected one immediate cancel call, got %d", len(gateway.cancelCalls))
+	}
+	if got := gateway.cancelCalls[0].data["cancel_at_cycle_end"]; got != 0 {
+		t.Fatalf("expected immediate cancel, got %#v", got)
+	}
+	if len(repo.subs) != 0 {
+		t.Fatalf("expected local subscription records to be deleted")
+	}
+}
+
+func TestResetSubscriptionForTestingBlockedWithoutOptIn(t *testing.T) {
+	_ = os.Unsetenv("ALLOW_SUBSCRIPTION_TEST_RESET")
+	repo := newFakeSubscriptionRepo(&models.Subscription{
+		SubscriptionID: "sub_reset_2",
+		UserID:         "user@example.com",
+		Status:         models.SubscriptionStatusActive,
+	})
+	svc := newTestSubscriptionService(repo, &fakeRazorpayGateway{}, &fakeEmailService{})
+
+	_, err := svc.ResetSubscriptionForTesting(context.Background(), "sub_reset_2", "RESET")
+	if err == nil {
+		t.Fatal("expected reset to be forbidden without env opt-in")
 	}
 }

@@ -15,6 +15,7 @@ type UserRepository interface {
 	Delete(ctx context.Context, userID string) error
 	UpdateActiveStatus(ctx context.Context, userID string, isActive bool) error
 	UpdateBillingCurrency(ctx context.Context, userID string, currency string) error
+	ClearBillingCurrency(ctx context.Context, userID string) error
 	// Admin methods
 	GetAll(ctx context.Context) ([]models.User, error)
 	GetTotalCount(ctx context.Context) (int64, error)
