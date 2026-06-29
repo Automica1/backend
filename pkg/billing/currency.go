@@ -17,11 +17,19 @@ var SupportedCurrencies = []string{CurrencyUSD, CurrencyINR}
 
 var indianPhonePattern = regexp.MustCompile(`^(\+?91)?[6-9]\d{9}$`)
 
+var indianTimezones = map[string]struct{}{
+	"Asia/Kolkata":  {},
+	"Asia/Calcutta": {},
+}
+
 type CurrencyInput struct {
 	SubscriptionCurrency string
 	UserBillingCurrency  string
 	RequestedCurrency    string
 	Contact              string
+	CountryCode          string
+	LocaleHint           string
+	TimezoneHint         string
 }
 
 // NormalizeCurrency returns a supported currency code or empty string.
@@ -53,6 +61,37 @@ func IsIndianPhone(contact string) bool {
 	return indianPhonePattern.MatchString(digits)
 }
 
+// IsIndianCountry reports whether a Cloudflare / ISO country code is India.
+func IsIndianCountry(countryCode string) bool {
+	return strings.EqualFold(strings.TrimSpace(countryCode), "IN")
+}
+
+// IsIndianLocale reports whether a locale hint looks Indian.
+func IsIndianLocale(locale string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(locale))
+	if normalized == "" {
+		return false
+	}
+	if normalized == "en-in" {
+		return true
+	}
+	return strings.HasSuffix(normalized, "-in")
+}
+
+// IsIndianTimezone reports whether a timezone hint is an Indian zone.
+func IsIndianTimezone(timezone string) bool {
+	_, ok := indianTimezones[strings.TrimSpace(timezone)]
+	return ok
+}
+
+// IsLikelyIndianUser combines server-side India signals.
+func IsLikelyIndianUser(contact, countryCode, locale, timezone string) bool {
+	return IsIndianCountry(countryCode) ||
+		IsIndianPhone(contact) ||
+		IsIndianLocale(locale) ||
+		IsIndianTimezone(timezone)
+}
+
 // ResolveBillingCurrency picks the billing currency using the priority chain from the plan.
 func ResolveBillingCurrency(in CurrencyInput) string {
 	if c := NormalizeCurrency(in.SubscriptionCurrency); c != "" {
@@ -64,7 +103,7 @@ func ResolveBillingCurrency(in CurrencyInput) string {
 	if c := NormalizeCurrency(in.RequestedCurrency); c != "" {
 		return c
 	}
-	if IsIndianPhone(in.Contact) {
+	if IsLikelyIndianUser(in.Contact, in.CountryCode, in.LocaleHint, in.TimezoneHint) {
 		return CurrencyINR
 	}
 	return CurrencyUSD
@@ -139,4 +178,16 @@ func ToResolvedPlan(plan models.Plan, currency string) (models.Plan, bool) {
 	plan.RazorpayPlanID = razorpayID
 	plan.Currency = currency
 	return plan, true
+}
+
+// UpgradeCreditDelta returns additional credits owed when moving between plans.
+func UpgradeCreditDelta(oldPlan, newPlan *models.Plan) int {
+	if oldPlan == nil || newPlan == nil {
+		return 0
+	}
+	delta := newPlan.Credits - oldPlan.Credits
+	if delta < 0 {
+		return 0
+	}
+	return delta
 }

@@ -52,6 +52,7 @@ func main() {
 	auditRepo := repository.NewAdminAuditRepository(db.GetCollection("admin_audit_logs"))
 	usageRepo := repository.NewUsageRepository(db.GetCollection("usage"))              // Add usage repository
 	subRepo := repository.NewSubscriptionRepository(db.GetCollection("subscriptions")) // Add subscription repository
+	paymentEventRepo := repository.NewPaymentEventRepository(db.GetCollection("payment_events"))
 	planRepo := repository.NewPlanRepository(db.GetCollection("plans"))                // Add plan repository
 	runtimeLogRepo := repository.NewRuntimeLogRepository(
 		cfg.Logs.AccessPath,
@@ -70,7 +71,7 @@ func main() {
 	usageService := services.NewUsageService(usageRepo) // Add usage service
 	planService := services.NewPlanService(planRepo)    // Add plan service
 	emailService := services.NewEmailService(cfg.Email.FromEmail, cfg.Email.FromName, cfg.Email.Password)
-	subService := services.NewSubscriptionService(subRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+	subService := services.NewSubscriptionService(subRepo, paymentEventRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
 	adminService := services.NewAdminService(auditRepo, runtimeLogRepo, userService, tokenService, planService, usageService, subService)
 
 	// Initialize API services

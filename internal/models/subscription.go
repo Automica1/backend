@@ -33,6 +33,7 @@ type Subscription struct {
 	CancelScheduledAt  *time.Time         `bson:"cancelScheduledAt,omitempty" json:"cancelScheduledAt,omitempty"`
 	CancelledAt        *time.Time         `bson:"cancelledAt,omitempty" json:"cancelledAt,omitempty"`
 	PendingPlanID      string             `bson:"pendingPlanId,omitempty" json:"pendingPlanId,omitempty"`
+	PreviousPlanID     string             `bson:"previousPlanId,omitempty" json:"previousPlanId,omitempty"`
 	PlanChangeDate     *time.Time         `bson:"planChangeDate,omitempty" json:"planChangeDate,omitempty"`
 	CreatedAt          time.Time          `bson:"createdAt" json:"createdAt"`
 	UpdatedAt          time.Time          `bson:"updatedAt" json:"updatedAt"`
@@ -42,9 +43,11 @@ type CreateSubscriptionRequest struct {
 	PlanID   string `json:"planId" validate:"required"`
 	Currency string `json:"currency,omitempty"`
 	// Optional customer details to create a Razorpay Customer server-side
-	Name    string `json:"name,omitempty"`
-	Email   string `json:"email,omitempty"`
-	Contact string `json:"contact,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Email    string `json:"email,omitempty"`
+	Contact  string `json:"contact,omitempty"`
+	Locale   string `json:"locale,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
 }
 
 type VerifyPaymentRequest struct {

@@ -44,6 +44,20 @@ func TestResolveBillingCurrency(t *testing.T) {
 			want: CurrencyINR,
 		},
 		{
+			name: "indian country default",
+			in: CurrencyInput{
+				CountryCode: "IN",
+			},
+			want: CurrencyINR,
+		},
+		{
+			name: "indian locale default",
+			in: CurrencyInput{
+				LocaleHint: "en-IN",
+			},
+			want: CurrencyINR,
+		},
+		{
 			name: "default usd",
 			in:   CurrencyInput{},
 			want: CurrencyUSD,
@@ -86,5 +100,13 @@ func TestFormatAmount(t *testing.T) {
 	}
 	if got := FormatAmount(1200, CurrencyUSD); got != "$12.00" {
 		t.Fatalf("FormatAmount USD = %q", got)
+	}
+}
+
+func TestUpgradeCreditDelta(t *testing.T) {
+	oldPlan := &models.Plan{Credits: 1000}
+	newPlan := &models.Plan{Credits: 9000}
+	if got := UpgradeCreditDelta(oldPlan, newPlan); got != 8000 {
+		t.Fatalf("UpgradeCreditDelta = %d, want 8000", got)
 	}
 }

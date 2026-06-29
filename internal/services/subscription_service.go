@@ -26,6 +26,7 @@ type RazorpayGateway interface {
 	CreateCustomer(data map[string]interface{}) (map[string]interface{}, error)
 	CreateOrder(data map[string]interface{}) (map[string]interface{}, error)
 	CreateSubscription(data map[string]interface{}) (map[string]interface{}, error)
+	UpdateSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error)
 	CancelSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error)
 	FetchSubscription(subscriptionID string) (map[string]interface{}, error)
 }
@@ -54,6 +55,10 @@ func (g *razorpayGateway) CreateOrder(data map[string]interface{}) (map[string]i
 
 func (g *razorpayGateway) CreateSubscription(data map[string]interface{}) (map[string]interface{}, error) {
 	return g.client.Subscription.Create(data, nil)
+}
+
+func (g *razorpayGateway) UpdateSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error) {
+	return g.client.Subscription.Update(subscriptionID, data, nil)
 }
 
 func (g *razorpayGateway) CancelSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error) {
@@ -90,7 +95,7 @@ func (g *razorpayGateway) FetchSubscription(subscriptionID string) (map[string]i
 }
 
 type SubscriptionService interface {
-	CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency string) (*models.SubscriptionResponse, error)
+	CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency, countryCode, locale, timezone string) (*models.SubscriptionResponse, error)
 	VerifyPayment(ctx context.Context, userID string, req *models.VerifyPaymentRequest) (*models.SubscriptionResponse, error)
 	GetSubscriptionStatus(ctx context.Context, userID string) (*models.Subscription, error)
 	CreateUpgradeOrder(ctx context.Context, userID, newPlanID string) (*models.SubscriptionResponse, error)
@@ -107,32 +112,34 @@ type SubscriptionService interface {
 }
 
 type subscriptionService struct {
-	subRepo        repository.SubscriptionRepository
-	creditsService CreditsService
-	userService    UserService
-	planService    PlanService
-	emailService   EmailService
-	razorpayKey    string
-	razorpaySecret string
-	webhookSecret  string
-	razorpay       RazorpayGateway
+	subRepo          repository.SubscriptionRepository
+	paymentEventRepo repository.PaymentEventRepository
+	creditsService   CreditsService
+	userService      UserService
+	planService      PlanService
+	emailService     EmailService
+	razorpayKey      string
+	razorpaySecret   string
+	webhookSecret    string
+	razorpay         RazorpayGateway
 }
 
-func NewSubscriptionService(subRepo repository.SubscriptionRepository, creditsService CreditsService, userService UserService, planService PlanService, emailService EmailService, key, secret, webhookSecret string) SubscriptionService {
+func NewSubscriptionService(subRepo repository.SubscriptionRepository, paymentEventRepo repository.PaymentEventRepository, creditsService CreditsService, userService UserService, planService PlanService, emailService EmailService, key, secret, webhookSecret string) SubscriptionService {
 	return &subscriptionService{
-		subRepo:        subRepo,
-		creditsService: creditsService,
-		userService:    userService,
-		planService:    planService,
-		emailService:   emailService,
-		razorpayKey:    key,
-		razorpaySecret: secret,
-		webhookSecret:  webhookSecret,
-		razorpay:       newRazorpayGateway(key, secret),
+		subRepo:          subRepo,
+		paymentEventRepo: paymentEventRepo,
+		creditsService:   creditsService,
+		userService:      userService,
+		planService:      planService,
+		emailService:     emailService,
+		razorpayKey:      key,
+		razorpaySecret:   secret,
+		webhookSecret:    webhookSecret,
+		razorpay:         newRazorpayGateway(key, secret),
 	}
 }
 
-func (s *subscriptionService) resolveBillingCurrency(ctx context.Context, userID, requestedCurrency, contact string) string {
+func (s *subscriptionService) resolveBillingCurrency(ctx context.Context, userID, requestedCurrency, contact, countryCode, locale, timezone string) string {
 	var subscriptionCurrency, userCurrency string
 
 	if sub, err := s.subRepo.GetByUserID(ctx, userID); err == nil && sub != nil {
@@ -148,10 +155,13 @@ func (s *subscriptionService) resolveBillingCurrency(ctx context.Context, userID
 		UserBillingCurrency:  userCurrency,
 		RequestedCurrency:    requestedCurrency,
 		Contact:              contact,
+		CountryCode:          countryCode,
+		LocaleHint:           locale,
+		TimezoneHint:         timezone,
 	})
 }
 
-func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency string) (*models.SubscriptionResponse, error) {
+func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency, countryCode, locale, timezone string) (*models.SubscriptionResponse, error) {
 	// Fetch plan details from DB
 	plan, err := s.planService.GetPlanByID(ctx, planID)
 	if err != nil {
@@ -162,7 +172,7 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "plan is not active", "")
 	}
 
-	currency := s.resolveBillingCurrency(ctx, userID, requestedCurrency, contact)
+	currency := s.resolveBillingCurrency(ctx, userID, requestedCurrency, contact, countryCode, locale, timezone)
 	amount, razorpayPlanID, ok := billing.ResolvePlanPricing(plan, currency)
 	if !ok {
 		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "plan is not configured for automated billing in "+currency, "")
@@ -252,9 +262,6 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 }
 
 func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, req *models.VerifyPaymentRequest) (*models.SubscriptionResponse, error) {
-	// 1. Verify signature
-	// Subscription verification uses payment_id + "|" + subscription_id
-	// Order verification uses order_id + "|" + payment_id
 	var data string
 	var subID string
 
@@ -270,7 +277,20 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid payment signature", "")
 	}
 
-	// 2. Find the subscription record for this payment
+	if req.RazorpayPaymentID != "" {
+		processed, err := s.paymentEventRepo.IsProcessed(ctx, req.RazorpayPaymentID)
+		if err != nil {
+			return nil, err
+		}
+		if processed {
+			sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
+			if err != nil {
+				return nil, err
+			}
+			return s.buildVerifyIdempotentResponse(ctx, userID, sub)
+		}
+	}
+
 	sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
 	if err != nil {
 		return nil, err
@@ -281,82 +301,67 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 	}
 
 	isUpgrade := sub.Status == "upgrading"
+	if sub.Status == "completed" {
+		return s.buildVerifyIdempotentResponse(ctx, userID, sub)
+	}
+	if !isUpgrade && sub.Status == models.SubscriptionStatusActive {
+		return s.buildVerifyIdempotentResponse(ctx, userID, sub)
+	}
 
-	// 2. If it's an upgrade, we merge it into the existing active subscription
+	var previousPlanID string
 	if isUpgrade {
-		// Use the new repository method to find the ACTUAL active subscription, skipping the 'upgrading' one
+		previousPlanID = sub.PreviousPlanID
+	}
+
+	if isUpgrade {
 		activeSub, err := s.subRepo.GetByUserIDAndStatus(ctx, userID, models.SubscriptionStatusActive)
 		if err != nil {
 			fmt.Printf("[VerifyPayment] Upgrade failed: could not find active subscription to merge into for user %s: %v\n", userID, err)
 			return nil, err
 		}
 
-		fmt.Printf("[VerifyPayment] Merging upgrade into active sub: %s\n", activeSub.SubscriptionID)
-
-		// Rescue zero date if necessary from the ORIGINAL sub
 		if activeSub.CurrentPeriodEnd.IsZero() {
 			activeSub.CurrentPeriodEnd = time.Now().AddDate(0, 1, 0)
 		}
 
-		// Update the main active subscription with the new plan info
-		activeSub.PlanID = sub.PlanID
+		if err := s.swapRazorpayPlan(ctx, activeSub.SubscriptionID, sub.PlanID, activeSub.Currency); err != nil {
+			fmt.Printf("[VerifyPayment] Razorpay plan swap failed: %v\n", err)
+		}
 
-		// Fetch full plan to get the real monthly price (not the prorated one)
+		activeSub.PlanID = sub.PlanID
 		newPlan, _ := s.planService.GetPlanByID(ctx, sub.PlanID)
 		if newPlan != nil {
 			activeSub.Amount = billing.PlanAmountInCurrency(newPlan, activeSub.Currency)
 		}
-
 		activeSub.UpdatedAt = time.Now()
 		if err := s.subRepo.Update(ctx, activeSub); err != nil {
 			return nil, err
 		}
 
-		// Mark the upgrade PAYMENT order as completed/inactive so it doesn't show up in status
-		sub.Status = "completed" // Instead of 'active', so it doesn't shadow the main sub
+		sub.Status = "completed"
 		sub.UpdatedAt = time.Now()
-		s.subRepo.Update(ctx, sub)
-
-		// Ensure we use the updated activeSub for credit calculation
+		_ = s.subRepo.Update(ctx, sub)
 		sub = activeSub
 	} else {
-		// Standard new subscription verification
 		sub.Status = models.SubscriptionStatusActive
 		sub.CurrentPeriodStart = time.Now()
-		sub.CurrentPeriodEnd = time.Now().AddDate(0, 1, 0) // 1 month
+		sub.CurrentPeriodEnd = time.Now().AddDate(0, 1, 0)
 		sub.UpdatedAt = time.Now()
-
 		if err := s.subRepo.Update(ctx, sub); err != nil {
 			return nil, err
 		}
 	}
 
-	// 3. Add credits
 	plan, err := s.planService.GetPlanByID(ctx, sub.PlanID)
-	creditsToAdd := 1000
-	if plan != nil {
-		if isUpgrade {
-			// Get current plan to calculate difference
-			// Actually, let's just use the plan's credit amount if it's a fresh sub,
-			// or the diff if it's an upgrade?
-			// payment.md: "Additional credits corresponding to the higher plan are granted"
-			// Usually this means NewPlan.Credits - OldPlan.Credits
-			// But since it's mid-cycle, maybe it's prorated credits?
-			// Simpler: Just give the difference.
+	if err != nil {
+		return nil, err
+	}
 
-			// We need the OLD plan ID. We didn't store it in the 'upgrading' record.
-			// But we can assume the user had a plan.
-			// Let's just grant the full credits of the new plan for simplicity, or the difference.
-			// If Basic is 1000 and Pro is 3000, upgrading gives 2000 more.
-
-			// For now, let's just use the full credits of the new plan as defined in plan model
-			// or we can calculate the difference if we find the previous plan.
-
-			// Let's assume the user gets the FULL credits of the new plan minus what they already got?
-			// That's complex. Let's just add the 'Credits' from the plan.
-			creditsToAdd = plan.Credits
-		} else {
-			creditsToAdd = plan.Credits
+	creditsToAdd := plan.Credits
+	if isUpgrade && previousPlanID != "" {
+		oldPlan, oldErr := s.planService.GetPlanByID(ctx, previousPlanID)
+		if oldErr == nil && oldPlan != nil {
+			creditsToAdd = billing.UpgradeCreditDelta(oldPlan, plan)
 		}
 	}
 
@@ -365,10 +370,11 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		return nil, fmt.Errorf("failed to ensure user existence: %w", err)
 	}
 
-	creditsResp, err := s.creditsService.AddCredits(ctx, &models.AddCreditsRequest{
-		UserID: user.UserID,
-		Amount: creditsToAdd,
-	})
+	eventType := paymentEventVerify
+	if isUpgrade {
+		eventType = paymentEventVerify + "_upgrade"
+	}
+	creditsAdded, err := s.grantCreditsOnce(ctx, req.RazorpayPaymentID, eventType, user.UserID, sub.SubscriptionID, creditsToAdd)
 	if err != nil {
 		return nil, err
 	}
@@ -377,20 +383,24 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		_ = s.userService.SetBillingCurrency(ctx, user.UserID, sub.Currency)
 	}
 
-	// Send confirmation email (fire-and-forget)
-	if plan != nil {
+	balance, err := s.creditsService.GetBalance(ctx, user.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	if plan != nil && creditsAdded > 0 {
 		nextBilling := sub.CurrentPeriodEnd
 		if nextBilling.IsZero() {
 			nextBilling = time.Now().AddDate(0, 1, 0)
 		}
-		go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, creditsToAdd, nextBilling)
+		go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, creditsAdded, nextBilling)
 	}
 
 	return &models.SubscriptionResponse{
 		Message:          "Payment verified and plan updated",
 		Status:           models.SubscriptionStatusActive,
-		CreditsAdded:     creditsToAdd,
-		RemainingCredits: creditsResp.Credits,
+		CreditsAdded:     creditsAdded,
+		RemainingCredits: balance.Credits,
 	}, nil
 }
 
@@ -500,8 +510,9 @@ func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, ne
 		SubscriptionID: orderID,
 		UserID:         userID,
 		Email:          email,
-		Status:         "upgrading", // Special status
+		Status:         "upgrading",
 		PlanID:         newPlanID,
+		PreviousPlanID: currentSub.PlanID,
 		Amount:         price,
 		Currency:       currency,
 		CreatedAt:      time.Now(),
@@ -843,7 +854,6 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 
 	switch payload.Event {
 	case "subscription.charged":
-		// This event is triggered when a recurring payment is successfully charged
 		payloadData, ok := payload.Payload["subscription"].(map[string]interface{})
 		if !ok {
 			return nil
@@ -852,14 +862,34 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 		if !ok {
 			return nil
 		}
-		subID := entity["id"].(string)
+		subID, _ := entity["id"].(string)
+		if subID == "" {
+			return nil
+		}
 
 		fmt.Printf("[Webhook] Subscription charged: %s\n", subID)
 
 		sub, err := s.subRepo.GetBySubscriptionID(ctx, subID)
 		if err != nil {
 			fmt.Printf("[Webhook] Subscription not found in DB: %s\n", subID)
-			return nil // Or handle accordingly
+			return nil
+		}
+
+		s.syncSubscriptionPeriod(sub, entity)
+		if err := s.applyPendingPlanChange(ctx, sub); err != nil {
+			fmt.Printf("[Webhook] Pending plan change failed for %s: %v\n", subID, err)
+		}
+
+		// Reload after potential plan change
+		sub, err = s.subRepo.GetBySubscriptionID(ctx, subID)
+		if err != nil {
+			return err
+		}
+		s.syncSubscriptionPeriod(sub, entity)
+		sub.Status = models.SubscriptionStatusActive
+		sub.UpdatedAt = time.Now()
+		if err := s.subRepo.Update(ctx, sub); err != nil {
+			return err
 		}
 
 		plan, err := s.planService.GetPlanByID(ctx, sub.PlanID)
@@ -867,20 +897,19 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 			return err
 		}
 
-		// Add credits for the new billing cycle
-		fmt.Printf("[Webhook] Adding %d credits for user %s\n", plan.Credits, sub.UserID)
-		creditsReq := &models.AddCreditsRequest{
-			UserID: sub.UserID,
-			Amount: plan.Credits,
-		}
-		_, err = s.creditsService.AddCredits(ctx, creditsReq)
+		paymentID := s.extractWebhookPaymentID(payload)
+		creditsAdded, err := s.grantCreditsOnce(ctx, paymentID, paymentEventWebhook, sub.UserID, sub.SubscriptionID, plan.Credits)
 		if err != nil {
 			return err
 		}
 
-		// Send confirmation email (fire-and-forget, don't fail on email error)
-		nextBilling := time.Now().AddDate(0, 1, 0)
-		go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, plan.Credits, nextBilling)
+		if creditsAdded > 0 {
+			nextBilling := sub.CurrentPeriodEnd
+			if nextBilling.IsZero() {
+				nextBilling = time.Now().AddDate(0, 1, 0)
+			}
+			go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, creditsAdded, nextBilling)
+		}
 		return nil
 
 	case "subscription.halted":

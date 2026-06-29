@@ -49,7 +49,7 @@ func (h *SubscriptionHandler) CreateOrder(w http.ResponseWriter, r *http.Request
 		req.Email = email
 	}
 
-	response, err := h.subService.CreateOrder(r.Context(), userID, req.Email, name, contact, req.PlanID, req.Currency)
+	response, err := h.subService.CreateOrder(r.Context(), userID, req.Email, name, contact, req.PlanID, req.Currency, r.Header.Get("CF-IPCountry"), req.Locale, req.Timezone)
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return

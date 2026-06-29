@@ -37,6 +37,10 @@ func (f *fakeRazorpayGateway) CreateSubscription(data map[string]interface{}) (m
 	return map[string]interface{}{"id": "sub_test"}, nil
 }
 
+func (f *fakeRazorpayGateway) UpdateSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error) {
+	return map[string]interface{}{"id": subscriptionID}, nil
+}
+
 func (f *fakeRazorpayGateway) CancelSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error) {
 	callData := map[string]interface{}{}
 	for k, v := range data {
@@ -233,10 +237,35 @@ func (r *fakeSubscriptionRepo) CountActive(ctx context.Context) (int64, error) {
 
 func newTestSubscriptionService(repo *fakeSubscriptionRepo, gateway RazorpayGateway, emailSvc EmailService) *subscriptionService {
 	return &subscriptionService{
-		subRepo:      repo,
-		emailService: emailSvc,
-		razorpay:     gateway,
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		emailService:     emailSvc,
+		razorpay:         gateway,
+		creditsService:   &fakeCreditsService{},
+		planService:      &fakePlanService{},
+		userService:      &fakeUserService{},
 	}
+}
+
+type fakePaymentEventRepo struct {
+	processed map[string]struct{}
+}
+
+func newFakePaymentEventRepo() *fakePaymentEventRepo {
+	return &fakePaymentEventRepo{processed: map[string]struct{}{}}
+}
+
+func (f *fakePaymentEventRepo) TryRecord(ctx context.Context, paymentID, eventType, userID, subscriptionID string, creditsAdded int) (bool, error) {
+	if _, ok := f.processed[paymentID]; ok {
+		return true, nil
+	}
+	f.processed[paymentID] = struct{}{}
+	return false, nil
+}
+
+func (f *fakePaymentEventRepo) IsProcessed(ctx context.Context, paymentID string) (bool, error) {
+	_, ok := f.processed[paymentID]
+	return ok, nil
 }
 
 func TestCancelSubscriptionSchedulesRazorpayCycleEndCancellation(t *testing.T) {
@@ -338,9 +367,10 @@ func TestReconcileAdminSubscriptionUpdatesLocalState(t *testing.T) {
 		},
 	}
 	svc := &subscriptionService{
-		subRepo:     repo,
-		razorpay:    gateway,
-		planService: &fakePlanService{},
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		razorpay:         gateway,
+		planService:      &fakePlanService{},
 	}
 
 	resp, err := svc.ReconcileAdminSubscription(context.Background(), "sub_789")
@@ -369,10 +399,25 @@ func (f *fakePlanService) GetActivePlans(ctx context.Context, currency string) (
 }
 
 func (f *fakePlanService) GetPlanByID(ctx context.Context, planID string) (*models.Plan, error) {
+	if planID == "starter" {
+		return &models.Plan{
+			PlanID:         planID,
+			Name:           "Starter",
+			IsActive:       true,
+			Credits:        1000,
+			RazorpayPlanID: "rp_starter_usd",
+			Price:          1200,
+			Pricing: map[string]models.PlanCurrencyPricing{
+				"USD": {Amount: 1200, RazorpayPlanID: "rp_starter_usd"},
+				"INR": {Amount: 99900, RazorpayPlanID: "rp_starter_inr"},
+			},
+		}, nil
+	}
 	return &models.Plan{
 		PlanID:         planID,
 		Name:           "Pro",
 		IsActive:       true,
+		Credits:        9000,
 		RazorpayPlanID: "rp_pro_usd",
 		Price:          9900,
 		Pricing: map[string]models.PlanCurrencyPricing{
@@ -494,12 +539,13 @@ func TestWebhookRawAcceptsValidSignature(t *testing.T) {
 	})
 	emailSvc := &fakeEmailService{}
 	svc := &subscriptionService{
-		subRepo:        repo,
-		razorpay:       &fakeRazorpayGateway{},
-		planService:    &fakePlanService{},
-		emailService:   emailSvc,
-		webhookSecret:  "whsec_test",
-		creditsService: &fakeCreditsService{},
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		razorpay:         &fakeRazorpayGateway{},
+		planService:      &fakePlanService{},
+		emailService:     emailSvc,
+		webhookSecret:    "whsec_test",
+		creditsService:   &fakeCreditsService{},
 	}
 
 	rawPayload := []byte(`{"event":"subscription.cancelled","payload":{"subscription":{"entity":{"id":"sub_raw_1"}}}}`)
@@ -598,13 +644,14 @@ func TestCreateOrderUsesINRForIndianPhone(t *testing.T) {
 	planSvc := &fakePlanService{}
 	userSvc := &fakeUserService{}
 	svc := &subscriptionService{
-		subRepo:     repo,
-		razorpay:    gateway,
-		planService: planSvc,
-		userService: userSvc,
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		razorpay:         gateway,
+		planService:      planSvc,
+		userService:      userSvc,
 	}
 
-	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "+919876543210", "pro", "")
+	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "+919876543210", "pro", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateOrder returned error: %v", err)
 	}
@@ -627,13 +674,14 @@ func TestCreateOrderDefaultsToUSD(t *testing.T) {
 	planSvc := &fakePlanService{}
 	userSvc := &fakeUserService{}
 	svc := &subscriptionService{
-		subRepo:     repo,
-		razorpay:    gateway,
-		planService: planSvc,
-		userService: userSvc,
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		razorpay:         gateway,
+		planService:      planSvc,
+		userService:      userSvc,
 	}
 
-	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "", "pro", "")
+	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "", "pro", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateOrder returned error: %v", err)
 	}
@@ -642,5 +690,99 @@ func TestCreateOrderDefaultsToUSD(t *testing.T) {
 	}
 	if resp.Amount != 9900 {
 		t.Fatalf("expected USD amount 9900, got %d", resp.Amount)
+	}
+}
+
+func TestCreateOrderUsesINRForCountryHeader(t *testing.T) {
+	repo := newFakeSubscriptionRepo()
+	svc := &subscriptionService{
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		razorpay:         &fakeRazorpayGateway{},
+		planService:      &fakePlanService{},
+		userService:      &fakeUserService{},
+	}
+
+	resp, err := svc.CreateOrder(context.Background(), "user@example.com", "user@example.com", "Test User", "", "pro", "", "IN", "", "")
+	if err != nil {
+		t.Fatalf("CreateOrder returned error: %v", err)
+	}
+	if resp.Currency != "INR" {
+		t.Fatalf("expected INR currency, got %s", resp.Currency)
+	}
+}
+
+type trackingCreditsService struct {
+	added int
+}
+
+func (f *trackingCreditsService) AddCredits(ctx context.Context, req *models.AddCreditsRequest) (*models.CreditsResponse, error) {
+	f.added += req.Amount
+	return &models.CreditsResponse{UserID: req.UserID, Credits: f.added}, nil
+}
+
+func (f *trackingCreditsService) GetBalanceByEmail(ctx context.Context, email string) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: email, Credits: f.added}, nil
+}
+
+func (f *trackingCreditsService) DeductCredits(ctx context.Context, req *models.DeductCreditsRequest) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: req.UserID, Credits: 0}, nil
+}
+
+func (f *trackingCreditsService) GetBalance(ctx context.Context, userID string) (*models.CreditsResponse, error) {
+	return &models.CreditsResponse{UserID: userID, Credits: f.added}, nil
+}
+
+func TestWebhookSubscriptionChargedIsIdempotent(t *testing.T) {
+	now := time.Now().UTC()
+	repo := newFakeSubscriptionRepo(&models.Subscription{
+		SubscriptionID:     "sub_charge_1",
+		UserID:             "user@example.com",
+		Email:              "user@example.com",
+		Status:             models.SubscriptionStatusActive,
+		PlanID:             "pro",
+		Amount:             9900,
+		Currency:           "USD",
+		CurrentPeriodStart: now.AddDate(0, -1, 0),
+		CurrentPeriodEnd:   now.AddDate(0, 0, 10),
+		CreatedAt:          now.AddDate(0, -1, 0),
+		UpdatedAt:          now,
+	})
+	credits := &trackingCreditsService{}
+	svc := &subscriptionService{
+		subRepo:          repo,
+		paymentEventRepo: newFakePaymentEventRepo(),
+		razorpay:         &fakeRazorpayGateway{},
+		planService:      &fakePlanService{},
+		emailService:     &fakeEmailService{},
+		creditsService:   credits,
+	}
+
+	payload := &models.WebhookPayload{
+		Event: "subscription.charged",
+		Payload: map[string]interface{}{
+			"subscription": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":            "sub_charge_1",
+					"current_start": float64(now.Unix()),
+					"current_end":   float64(now.AddDate(0, 1, 0).Unix()),
+				},
+			},
+			"payment": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id": "pay_same_1",
+				},
+			},
+		},
+	}
+
+	if err := svc.HandleWebhook(context.Background(), payload, ""); err != nil {
+		t.Fatalf("first webhook failed: %v", err)
+	}
+	if err := svc.HandleWebhook(context.Background(), payload, ""); err != nil {
+		t.Fatalf("second webhook failed: %v", err)
+	}
+	if credits.added != 9000 {
+		t.Fatalf("expected credits added once (9000), got %d", credits.added)
 	}
 }

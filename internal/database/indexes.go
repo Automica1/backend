@@ -25,6 +25,11 @@ func (m *MongoDB) CreateIndexes(ctx context.Context) error {
 		return err
 	}
 
+	paymentEventsCollection := m.GetCollection("payment_events")
+	if err := m.createPaymentEventsIndexes(ctx, paymentEventsCollection); err != nil {
+		return err
+	}
+
 	log.Println("✅ Database indexes created successfully")
 	return nil
 }
@@ -64,5 +69,22 @@ func (m *MongoDB) createCreditsIndexes(ctx context.Context, collection *mongo.Co
 	}
 
 	log.Println("✅ Credits collection indexes created")
+	return nil
+}
+
+func (m *MongoDB) createPaymentEventsIndexes(ctx context.Context, collection *mongo.Collection) error {
+	indexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{"paymentId", 1}},
+			Options: options.Index().SetUnique(true),
+		},
+	}
+
+	_, err := collection.Indexes().CreateMany(ctx, indexes)
+	if err != nil {
+		return err
+	}
+
+	log.Println("✅ Payment events collection indexes created")
 	return nil
 }
