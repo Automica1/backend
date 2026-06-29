@@ -28,6 +28,7 @@ type Handlers struct {
 	APIKey                *handlers.APIKeyHandler
 	BetaKey               *handlers.BetaKeyHandler
 	BetaFeedback          *handlers.BetaFeedbackHandler
+	GuestPass             *handlers.GuestPassHandler
 	Usage                 *handlers.UsageHandler        // Add usage handler
 	Subscription          *handlers.SubscriptionHandler // Add subscription handler
 	Plan                  *handlers.PlanHandler         // Add plan handler
@@ -35,9 +36,10 @@ type Handlers struct {
 
 // Services struct to hold required services for middleware
 type Services struct {
-	APIKeyService services.APIKeyService
-	UsageService  services.UsageService // Add usage service
-	UserRepo      repository.UserRepository
+	APIKeyService    services.APIKeyService
+	GuestPassService services.GuestPassService
+	UsageService     services.UsageService // Add usage service
+	UserRepo         repository.UserRepository
 }
 
 func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
@@ -62,6 +64,11 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Post("/register", h.User.RegisterUser)
 			r.Get("/plans", h.Plan.GetActivePlans) // Public plans list
 			r.Get("/billing-config", h.Plan.GetPublicBillingConfig)
+
+			r.Route("/guest-passes", func(r chi.Router) {
+				r.Get("/balance", h.GuestPass.GetBalance)
+				r.Post("/validate", h.GuestPass.ValidatePass)
+			})
 		})
 
 		// Protected routes (JWT authentication required)
@@ -237,12 +244,21 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				// Beta feedback sessions (Admin only)
 				r.Get("/beta-feedback/sessions", h.BetaFeedback.ListSessionsAdmin)
 				r.Get("/beta-feedback/sessions/{sessionId}", h.BetaFeedback.GetSessionAdmin)
+
+				// Guest pass management (Admin only)
+				r.Route("/guest-passes", func(r chi.Router) {
+					r.Get("/services", h.GuestPass.ListSupportedServices)
+					r.Get("/", h.GuestPass.ListPasses)
+					r.Post("/", h.GuestPass.CreatePass)
+					r.Put("/{passId}", h.GuestPass.UpdatePass)
+					r.Delete("/{passId}", h.GuestPass.RevokePass)
+				})
 			})
 		})
 
-		// Routes that support both JWT and API Key authentication
+		// Routes that support JWT, API Key, or Guest Pass authentication
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.AuthOrAPIKey(s.APIKeyService)) // Pass the API key service
+			r.Use(middleware.AuthOrAPIKeyOrGuestPass(s.APIKeyService, s.GuestPassService))
 
 			// API processing routes - accessible with either JWT or API key
 			// These routes will automatically track usage via the handlers

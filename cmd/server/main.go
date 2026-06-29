@@ -46,6 +46,7 @@ func main() {
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	betaKeyRepo := repository.NewBetaKeyRepository(db.GetCollection("beta_keys"))
+	guestPassRepo := repository.NewGuestPassRepository(db.GetCollection("guest_passes"))
 	betaFeedbackRepo := repository.NewBetaFeedbackRepository(db.GetCollection("beta_feedback_sessions"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys"))
 	activityRepo := repository.NewActivityRepository(db.GetCollection("activities"))
@@ -66,6 +67,7 @@ func main() {
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
 	betaKeyService := services.NewBetaKeyService(betaKeyRepo, userService)
+	guestPassService := services.NewGuestPassService(guestPassRepo, creditsRepo)
 	betaFeedbackService := services.NewBetaFeedbackService(betaFeedbackRepo, creditsService)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
 	usageService := services.NewUsageService(usageRepo) // Add usage service
@@ -116,6 +118,7 @@ func main() {
 		APIKey:  handlers.NewAPIKeyHandler(apiKeyService, userService),
 		BetaKey: handlers.NewBetaKeyHandler(betaKeyService, adminService),
 		BetaFeedback: handlers.NewBetaFeedbackHandler(betaFeedbackService, userService, adminService),
+		GuestPass:    handlers.NewGuestPassHandler(guestPassService, adminService),
 		// These handlers don't have usage tracking yet - using original constructors
 		QRMasking:    handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
 		QRExtraction: handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
@@ -148,9 +151,10 @@ func main() {
 	log.Println("✅ All handlers initialized successfully")
 
 	services := &routes.Services{
-		APIKeyService: apiKeyService,
-		UsageService:  usageService, // Add usage service to routes
-		UserRepo:      userRepo,
+		APIKeyService:    apiKeyService,
+		GuestPassService: guestPassService,
+		UsageService:     usageService, // Add usage service to routes
+		UserRepo:         userRepo,
 	}
 	// Setup routes
 	router := routes.SetupRoutes(handlers, services)

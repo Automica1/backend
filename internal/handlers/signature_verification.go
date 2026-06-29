@@ -47,10 +47,8 @@ func NewSignatureVerificationHandler(
 func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
-	// Get email from context (set by auth middleware)
-	email, ok := r.Context().Value("email").(string)
-	if !ok {
-		// Track failed authentication
+	billing, billingErr := ResolveServiceBilling(r, "signature-verification")
+	if billingErr != nil {
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 			UserID:      "unknown",
 			Email:       "unknown",
@@ -58,21 +56,17 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 			Endpoint:    r.URL.Path,
 			Method:      r.Method,
 			Success:     false,
-			ErrorMsg:    "email not found in context",
+			ErrorMsg:    billingErr.Error(),
 			CreditsUsed: 0,
 			IPAddress:   h.getClientIP(r),
 			UserAgent:   r.UserAgent(),
-			AuthMethod:  h.getAuthMethod(r),
+			AuthMethod:  middleware.ResolveAuthMethod(r),
 			ProcessTime: time.Since(startTime).Milliseconds(),
 		})
-
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrUnauthorized,
-			http.StatusUnauthorized,
-			"email not found in context",
-		))
+		utils.SendErrorResponse(w, billingErr)
 		return
 	}
+	email := billing.Email
 
 	// Check if request is authenticated via API key
 	_, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context())
@@ -130,74 +124,32 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	// Try to get user by email, auto-create if not found
-	user, err := h.userService.GetUserByEmail(ctx, email)
+	userID, err := ResolveServiceUser(ctx, h.userService, billing)
 	if err != nil {
-		// If user not found, try to auto-create them
-		if apperrors.IsErrorType(err, apperrors.ErrUserNotFound) {
-			registerReq := &models.RegisterUserRequest{
-				UserID: email, // Use email as user_id for Kinde users
-				Email:  email,
-			}
-
-			createdUser, createErr := h.userService.RegisterUser(ctx, registerReq)
-			if createErr != nil {
-				// Track user creation failure
-				h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-					UserID:      email,
-					Email:       email,
-					ServiceName: "signature-verification",
-					Endpoint:    r.URL.Path,
-					Method:      r.Method,
-					Success:     false,
-					ErrorMsg:    "failed to auto-create user: " + createErr.Error(),
-					CreditsUsed: 0,
-					IPAddress:   h.getClientIP(r),
-					UserAgent:   r.UserAgent(),
-					AuthMethod:  h.getAuthMethod(r),
-					ProcessTime: time.Since(startTime).Milliseconds(),
-				})
-
-				utils.SendErrorResponse(w, apperrors.NewAppError(
-					apperrors.ErrInternalServer,
-					http.StatusInternalServerError,
-					"failed to auto-create user: "+createErr.Error(),
-				))
-				return
-			}
-			user = &createdUser.User
-		} else {
-			// Track user lookup failure
-			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-				UserID:      email,
-				Email:       email,
-				ServiceName: "signature-verification",
-				Endpoint:    r.URL.Path,
-				Method:      r.Method,
-				Success:     false,
-				ErrorMsg:    "user not found: " + err.Error(),
-				CreditsUsed: 0,
-				IPAddress:   h.getClientIP(r),
-				UserAgent:   r.UserAgent(),
-				AuthMethod:  h.getAuthMethod(r),
-				ProcessTime: time.Since(startTime).Milliseconds(),
-			})
-
-			utils.SendErrorResponse(w, apperrors.NewAppError(
-				apperrors.ErrUserNotFound,
-				http.StatusNotFound,
-				"user not found: "+err.Error(),
-			))
-			return
-		}
+		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
+			UserID:      email,
+			Email:       email,
+			ServiceName: "signature-verification",
+			Endpoint:    r.URL.Path,
+			Method:      r.Method,
+			Success:     false,
+			ErrorMsg:    err.Error(),
+			CreditsUsed: 0,
+			IPAddress:   h.getClientIP(r),
+			UserAgent:   r.UserAgent(),
+			AuthMethod:  billing.AuthMethod,
+			ProcessTime: time.Since(startTime).Milliseconds(),
+		})
+		utils.SendErrorResponse(w, err)
+		return
 	}
 
 	// Check user's credit balance before processing
-	balance, err := h.creditsService.GetBalance(ctx, user.UserID)
+	balance, err := h.creditsService.GetBalance(ctx, userID)
 	if err != nil {
 		// Track balance check failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "signature-verification",
 			Endpoint:    r.URL.Path,
@@ -219,7 +171,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	if balance.Credits < 2 {
 		// Track insufficient credits
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "signature-verification",
 			Endpoint:    r.URL.Path,
@@ -254,7 +206,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		record, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey, email)
 		if err != nil {
 			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-				UserID:      user.UserID,
+				UserID:      userID,
 				Email:       email,
 				ServiceName: usageServiceName,
 				Endpoint:    r.URL.Path,
@@ -274,14 +226,14 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		betaKeyRecord = record
 
 		if h.betaFeedbackService != nil {
-			hasPending, pendingErr := h.betaFeedbackService.HasPendingSession(ctx, user.UserID, serviceName)
+			hasPending, pendingErr := h.betaFeedbackService.HasPendingSession(ctx, userID, serviceName)
 			if pendingErr != nil {
 				utils.SendErrorResponse(w, pendingErr)
 				return
 			}
 			if hasPending && balance.Credits < 2 {
 				h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-					UserID:      user.UserID,
+					UserID:      userID,
 					Email:       email,
 					ServiceName: usageServiceName,
 					Endpoint:    r.URL.Path,
@@ -312,7 +264,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	if err != nil {
 		// Track API failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: usageServiceName,
 			Endpoint:    r.URL.Path,
@@ -345,7 +297,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	if verificationResult == nil || !verificationResult.Success {
 		// Still deduct credits for API usage even when verification fails
 		deductReq := &models.DeductCreditsRequest{
-			UserID: user.UserID,
+			UserID: userID,
 			Amount: 2,
 		}
 		updatedBalance, _ := h.creditsService.DeductCredits(ctx, deductReq)
@@ -361,7 +313,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 		// Track API failure (but still consider it a "successful" call since API responded)
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: usageServiceName,
 			Endpoint:    r.URL.Path,
@@ -379,7 +331,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		betaFeedbackSessionID := h.createBetaFeedbackSessionIfNeeded(
 			ctx,
 			useBeta,
-			user,
+			&models.User{UserID: userID},
 			email,
 			serviceName,
 			betaKeyRecord,
@@ -428,7 +380,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	// API success: true - deduct 2 credits from user
 	deductReq := &models.DeductCreditsRequest{
-		UserID: user.UserID,
+		UserID: userID,
 		Amount: 2,
 	}
 
@@ -436,7 +388,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	if err != nil {
 		// Track credit deduction failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: usageServiceName,
 			Endpoint:    r.URL.Path,
@@ -460,7 +412,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	// Track successful operation
 	h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-		UserID:      user.UserID,
+		UserID:      userID,
 		Email:       email,
 		ServiceName: usageServiceName,
 		Endpoint:    r.URL.Path,
@@ -480,7 +432,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 		betaFeedbackSessionID = h.createBetaFeedbackSessionIfNeeded(
 			ctx,
 			useBeta,
-			user,
+			&models.User{UserID: userID},
 			email,
 			serviceName,
 			betaKeyRecord,
@@ -509,7 +461,7 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	} else {
 		response := &models.SignatureVerificationResponse{
 			Message:               "Signature verification completed successfully",
-			UserID:                user.UserID,
+			UserID:                userID,
 			RemainingCredits:      updatedBalance.Credits,
 			VerificationResult:    verificationResult,
 			ProcessedAt:           time.Now(),
@@ -558,10 +510,7 @@ func (h *SignatureVerificationHandler) getClientIP(r *http.Request) string {
 }
 
 func (h *SignatureVerificationHandler) getAuthMethod(r *http.Request) string {
-	if _, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context()); isAPIKeyAuth {
-		return "api_key"
-	}
-	return "bearer_token"
+	return middleware.ResolveAuthMethod(r)
 }
 
 func (h *SignatureVerificationHandler) signatureUsageServiceName(useBeta bool) string {

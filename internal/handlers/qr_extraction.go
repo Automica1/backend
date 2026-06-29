@@ -41,10 +41,8 @@ func NewQRExtractionHandler(
 func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
-	// Get email from context (set by auth middleware)
-	email, ok := r.Context().Value("email").(string)
-	if !ok {
-		// Track failed authentication
+	billing, billingErr := ResolveServiceBilling(r, "qr-extract")
+	if billingErr != nil {
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
 			UserID:      "unknown",
 			Email:       "unknown",
@@ -52,23 +50,18 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 			Endpoint:    r.URL.Path,
 			Method:      r.Method,
 			Success:     false,
-			ErrorMsg:    "email not found in context",
+			ErrorMsg:    billingErr.Error(),
 			CreditsUsed: 0,
 			IPAddress:   h.getClientIP(r),
 			UserAgent:   r.UserAgent(),
-			AuthMethod:  h.getAuthMethod(r),
+			AuthMethod:  middleware.ResolveAuthMethod(r),
 			ProcessTime: time.Since(startTime).Milliseconds(),
 		})
-
-		utils.SendErrorResponse(w, apperrors.NewAppError(
-			apperrors.ErrUnauthorized,
-			http.StatusUnauthorized,
-			"email not found in context",
-		))
+		utils.SendErrorResponse(w, billingErr)
 		return
 	}
+	email := billing.Email
 
-	// Check if request is authenticated via API key
 	_, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context())
 
 	// Parse request body
@@ -124,75 +117,32 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Try to get user by email, auto-create if not found
-	user, err := h.userService.GetUserByEmail(ctx, email)
+	userID, err := ResolveServiceUser(ctx, h.userService, billing)
 	if err != nil {
-		// If user not found, try to auto-create them
-		if apperrors.IsErrorType(err, apperrors.ErrUserNotFound) {
-			// Auto-create user with email as user_id for Kinde users
-			registerReq := &models.RegisterUserRequest{
-				UserID: email, // Use email as user_id for Kinde users
-				Email:  email,
-			}
-
-			createdUser, createErr := h.userService.RegisterUser(ctx, registerReq)
-			if createErr != nil {
-				// Track user creation failure
-				h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-					UserID:      email,
-					Email:       email,
-					ServiceName: "qr-extraction",
-					Endpoint:    r.URL.Path,
-					Method:      r.Method,
-					Success:     false,
-					ErrorMsg:    "failed to auto-create user: " + createErr.Error(),
-					CreditsUsed: 0,
-					IPAddress:   h.getClientIP(r),
-					UserAgent:   r.UserAgent(),
-					AuthMethod:  h.getAuthMethod(r),
-					ProcessTime: time.Since(startTime).Milliseconds(),
-				})
-
-				utils.SendErrorResponse(w, apperrors.NewAppError(
-					apperrors.ErrInternalServer,
-					http.StatusInternalServerError,
-					"failed to auto-create user: "+createErr.Error(),
-				))
-				return
-			}
-			user = &createdUser.User
-		} else {
-			// Track user lookup failure
-			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-				UserID:      email,
-				Email:       email,
-				ServiceName: "qr-extraction",
-				Endpoint:    r.URL.Path,
-				Method:      r.Method,
-				Success:     false,
-				ErrorMsg:    "user not found: " + err.Error(),
-				CreditsUsed: 0,
-				IPAddress:   h.getClientIP(r),
-				UserAgent:   r.UserAgent(),
-				AuthMethod:  h.getAuthMethod(r),
-				ProcessTime: time.Since(startTime).Milliseconds(),
-			})
-
-			utils.SendErrorResponse(w, apperrors.NewAppError(
-				apperrors.ErrUserNotFound,
-				http.StatusNotFound,
-				"user not found: "+err.Error(),
-			))
-			return
-		}
+		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
+			UserID:      email,
+			Email:       email,
+			ServiceName: "qr-extraction",
+			Endpoint:    r.URL.Path,
+			Method:      r.Method,
+			Success:     false,
+			ErrorMsg:    err.Error(),
+			CreditsUsed: 0,
+			IPAddress:   h.getClientIP(r),
+			UserAgent:   r.UserAgent(),
+			AuthMethod:  billing.AuthMethod,
+			ProcessTime: time.Since(startTime).Milliseconds(),
+		})
+		utils.SendErrorResponse(w, err)
+		return
 	}
 
 	// Check user's credit balance before processing
-	balance, err := h.creditsService.GetBalance(ctx, user.UserID)
+	balance, err := h.creditsService.GetBalance(ctx, userID)
 	if err != nil {
 		// Track balance check failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "qr-extraction",
 			Endpoint:    r.URL.Path,
@@ -214,7 +164,7 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 	if balance.Credits < 1 {
 		// Track insufficient credits
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "qr-extraction",
 			Endpoint:    r.URL.Path,
@@ -241,7 +191,7 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 	if err != nil {
 		// Track API failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "qr-extraction",
 			Endpoint:    r.URL.Path,
@@ -269,14 +219,14 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 	if qrResult == nil || !qrResult.Success {
 		// Still deduct credits for API usage even when extraction fails
 		deductReq := &models.DeductCreditsRequest{
-			UserID: user.UserID,
+			UserID: userID,
 			Amount: 1,
 		}
 		h.creditsService.DeductCredits(ctx, deductReq)
 
 		// Track API failure (but still consider it a "successful" call since API responded)
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "qr-extraction",
 			Endpoint:    r.URL.Path,
@@ -317,7 +267,7 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 
 	// API success: true - deduct 1 credit from user
 	deductReq := &models.DeductCreditsRequest{
-		UserID: user.UserID,
+		UserID: userID,
 		Amount: 1,
 	}
 
@@ -325,7 +275,7 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 	if err != nil {
 		// Track credit deduction failure
 		h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-			UserID:      user.UserID,
+			UserID:      userID,
 			Email:       email,
 			ServiceName: "qr-extraction",
 			Endpoint:    r.URL.Path,
@@ -349,7 +299,7 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 
 	// Track successful operation
 	h.trackUsage(r.Context(), &models.UsageTrackingRequest{
-		UserID:      user.UserID,
+		UserID:      userID,
 		Email:       email,
 		ServiceName: "qr-extraction",
 		Endpoint:    r.URL.Path,
@@ -371,7 +321,7 @@ func (h *QRExtractionHandler) ProcessQRExtraction(w http.ResponseWriter, r *http
 		// For Bearer token (frontend): return full response with credits info
 		response := &models.QRExtractionResponse{
 			Message:          "QR extraction completed successfully",
-			UserID:           user.UserID,
+			UserID:           userID,
 			RemainingCredits: updatedBalance.Credits,
 			QRResult:         qrResult,
 			ProcessedAt:      time.Now(),
@@ -418,8 +368,5 @@ func (h *QRExtractionHandler) getClientIP(r *http.Request) string {
 }
 
 func (h *QRExtractionHandler) getAuthMethod(r *http.Request) string {
-	if _, isAPIKeyAuth := middleware.GetAPIKeyFromContext(r.Context()); isAPIKeyAuth {
-		return "api_key"
-	}
-	return "bearer_token"
+	return middleware.ResolveAuthMethod(r)
 }
