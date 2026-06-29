@@ -98,7 +98,7 @@ func (g *razorpayGateway) FetchSubscription(subscriptionID string) (map[string]i
 type SubscriptionService interface {
 	CreateOrder(ctx context.Context, userID, email, name, contact, planID, requestedCurrency, countryCode, locale, timezone string) (*models.SubscriptionResponse, error)
 	VerifyPayment(ctx context.Context, userID string, req *models.VerifyPaymentRequest) (*models.SubscriptionResponse, error)
-	GetSubscriptionStatus(ctx context.Context, userID string) (*models.Subscription, error)
+	GetSubscriptionStatus(ctx context.Context, userID string) (*models.SubscriptionStatusResponse, error)
 	CreateUpgradeOrder(ctx context.Context, userID, newPlanID string) (*models.SubscriptionResponse, error)
 	CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error)
 	DowngradeSubscription(ctx context.Context, userID, newPlanID string) error
@@ -559,8 +559,33 @@ func (s *subscriptionService) DowngradeSubscription(ctx context.Context, userID,
 	return s.subRepo.Update(ctx, sub)
 }
 
-func (s *subscriptionService) GetSubscriptionStatus(ctx context.Context, userID string) (*models.Subscription, error) {
-	return s.subRepo.GetByUserID(ctx, userID)
+func (s *subscriptionService) GetSubscriptionStatus(ctx context.Context, userID string) (*models.SubscriptionStatusResponse, error) {
+	sub, err := s.subRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &models.SubscriptionStatusResponse{
+		Subscription: *sub,
+	}
+
+	if sub.PlanID != "" {
+		if plan, planErr := s.planService.GetPlanByID(ctx, sub.PlanID); planErr == nil && plan != nil {
+			response.PlanName = plan.Name
+			response.PlanCredits = plan.Credits
+			if amount := billing.PlanAmountInCurrency(plan, sub.Currency); amount > 0 {
+				response.CatalogAmount = amount
+			}
+		}
+	}
+
+	if sub.PendingPlanID != "" {
+		if pending, planErr := s.planService.GetPlanByID(ctx, sub.PendingPlanID); planErr == nil && pending != nil {
+			response.PendingPlanName = pending.Name
+		}
+	}
+
+	return response, nil
 }
 
 func (s *subscriptionService) CancelSubscription(ctx context.Context, userID string) error {

@@ -417,7 +417,7 @@ func (f *fakePlanService) CreatePlan(ctx context.Context, req *models.CreatePlan
 	return &models.Plan{}, nil
 }
 
-func (f *fakePlanService) GetActivePlans(ctx context.Context, currency string) ([]models.Plan, error) {
+func (f *fakePlanService) GetActivePlans(ctx context.Context, currency string) ([]models.PublicPlan, error) {
 	return nil, nil
 }
 

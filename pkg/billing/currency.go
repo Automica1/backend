@@ -162,6 +162,35 @@ func FormatAmount(amount int, currency string) string {
 	}
 }
 
+// ToPublicPlan strips Razorpay identifiers from a resolved plan for customer APIs.
+func ToPublicPlan(plan models.Plan) models.PublicPlan {
+	public := models.PublicPlan{
+		PlanID:       plan.PlanID,
+		Name:         plan.Name,
+		Description:  plan.Description,
+		Price:        plan.Price,
+		Currency:     plan.Currency,
+		Credits:      plan.Credits,
+		Features:     plan.Features,
+		DisplayOrder: plan.DisplayOrder,
+		IsPopular:    plan.IsPopular,
+		ContactSales: plan.ContactSales,
+		CtaLabel:     plan.CtaLabel,
+	}
+	if !plan.ID.IsZero() {
+		public.ID = plan.ID.Hex()
+	}
+	if plan.Pricing != nil {
+		public.Pricing = make(map[string]models.PublicPlanCurrencyPricing, len(plan.Pricing))
+		for currency, item := range plan.Pricing {
+			if item.Amount > 0 {
+				public.Pricing[currency] = models.PublicPlanCurrencyPricing{Amount: item.Amount}
+			}
+		}
+	}
+	return public
+}
+
 // ToResolvedPlan returns a copy of the plan with price/razorpayPlanId/currency set for the requested currency.
 func ToResolvedPlan(plan models.Plan, currency string) (models.Plan, bool) {
 	currency = NormalizeCurrency(currency)

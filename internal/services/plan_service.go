@@ -3,6 +3,7 @@ package services
 
 import (
 	"context"
+	"sort"
 
 	"chi-mongo-backend/internal/models"
 	"chi-mongo-backend/internal/repository"
@@ -14,7 +15,7 @@ import (
 
 type PlanService interface {
 	CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error)
-	GetActivePlans(ctx context.Context, currency string) ([]models.Plan, error)
+	GetActivePlans(ctx context.Context, currency string) ([]models.PublicPlan, error)
 	GetAllPlans(ctx context.Context) ([]models.Plan, error)
 	GetPlanByID(ctx context.Context, planID string) (*models.Plan, error)
 	UpdatePlan(ctx context.Context, planID string, req *models.UpdatePlanRequest) error
@@ -73,17 +74,22 @@ func applyLegacyUSDFields(plan *models.Plan) {
 
 func (s *planService) CreatePlan(ctx context.Context, req *models.CreatePlanRequest) (*models.Plan, error) {
 	pricing := buildPricingFromCreate(req)
-	if len(pricing) == 0 {
+	if len(pricing) == 0 && !req.ContactSales {
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "at least one currency pricing configuration is required", "")
 	}
 
 	plan := &models.Plan{
-		PlanID:      req.PlanID,
-		Name:        req.Name,
-		Description: req.Description,
-		Credits:     req.Credits,
-		IsActive:    req.IsActive,
-		Pricing:     pricing,
+		PlanID:       req.PlanID,
+		Name:         req.Name,
+		Description:  req.Description,
+		Credits:      req.Credits,
+		IsActive:     req.IsActive,
+		Pricing:      pricing,
+		Features:     req.Features,
+		DisplayOrder: req.DisplayOrder,
+		IsPopular:    req.IsPopular,
+		ContactSales: req.ContactSales,
+		CtaLabel:     req.CtaLabel,
 	}
 	applyLegacyUSDFields(plan)
 
@@ -95,19 +101,33 @@ func (s *planService) CreatePlan(ctx context.Context, req *models.CreatePlanRequ
 	return plan, nil
 }
 
-func (s *planService) GetActivePlans(ctx context.Context, currency string) ([]models.Plan, error) {
+func (s *planService) GetActivePlans(ctx context.Context, currency string) ([]models.PublicPlan, error) {
 	plans, err := s.planRepo.GetAll(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 
-	resolved := make([]models.Plan, 0, len(plans))
+	sort.SliceStable(plans, func(i, j int) bool {
+		if plans[i].DisplayOrder != plans[j].DisplayOrder {
+			return plans[i].DisplayOrder < plans[j].DisplayOrder
+		}
+		return plans[i].Price < plans[j].Price
+	})
+
+	resolved := make([]models.PublicPlan, 0, len(plans))
 	for _, plan := range plans {
+		if plan.ContactSales {
+			public := billing.ToPublicPlan(plan)
+			public.Currency = currency
+			resolved = append(resolved, public)
+			continue
+		}
+
 		view, ok := billing.ToResolvedPlan(plan, currency)
 		if !ok {
 			continue
 		}
-		resolved = append(resolved, view)
+		resolved = append(resolved, billing.ToPublicPlan(view))
 	}
 	return resolved, nil
 }
@@ -139,6 +159,21 @@ func (s *planService) UpdatePlan(ctx context.Context, planID string, req *models
 	}
 	if req.RazorpayPlanID != nil {
 		updates["razorpayPlanId"] = *req.RazorpayPlanID
+	}
+	if req.Features != nil {
+		updates["features"] = *req.Features
+	}
+	if req.DisplayOrder != nil {
+		updates["displayOrder"] = *req.DisplayOrder
+	}
+	if req.IsPopular != nil {
+		updates["isPopular"] = *req.IsPopular
+	}
+	if req.ContactSales != nil {
+		updates["contactSales"] = *req.ContactSales
+	}
+	if req.CtaLabel != nil {
+		updates["ctaLabel"] = *req.CtaLabel
 	}
 	if req.Pricing != nil {
 		updates["pricing"] = req.Pricing

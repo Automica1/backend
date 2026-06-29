@@ -68,6 +68,14 @@ type SubscriptionResponse struct {
 	RemainingCredits int                `json:"remainingCredits,omitempty"`
 }
 
+type SubscriptionStatusResponse struct {
+	Subscription
+	PlanName        string `json:"planName,omitempty"`
+	PlanCredits     int    `json:"planCredits,omitempty"`
+	PendingPlanName string `json:"pendingPlanName,omitempty"`
+	CatalogAmount   int    `json:"catalogAmount,omitempty"`
+}
+
 type WebhookPayload struct {
 	Domain    string                 `json:"domain"`
 	Entity    string                 `json:"entity"`

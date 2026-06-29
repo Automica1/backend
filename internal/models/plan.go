@@ -15,43 +15,80 @@ type PlanCurrencyPricing struct {
 type Plan struct {
 	ID             primitive.ObjectID             `bson:"_id,omitempty" json:"id,omitempty"`
 	PlanID         string                         `bson:"planId" json:"planId"`
-	RazorpayPlanID string                         `bson:"razorpayPlanId" json:"razorpayPlanId"`
+	RazorpayPlanID string                         `bson:"razorpayPlanId" json:"razorpayPlanId,omitempty"`
 	Name           string                         `bson:"name" json:"name"`
 	Description    string                         `bson:"description" json:"description"`
 	Price          int                            `bson:"price" json:"price"` // legacy USD cents; resolved per currency in API
 	Credits        int                            `bson:"credits" json:"credits"`
 	IsActive       bool                           `bson:"isActive" json:"isActive"`
 	Pricing        map[string]PlanCurrencyPricing `bson:"pricing,omitempty" json:"pricing,omitempty"`
+	Features       []string                       `bson:"features,omitempty" json:"features,omitempty"`
+	DisplayOrder   int                            `bson:"displayOrder,omitempty" json:"displayOrder,omitempty"`
+	IsPopular      bool                           `bson:"isPopular,omitempty" json:"isPopular,omitempty"`
+	ContactSales   bool                           `bson:"contactSales,omitempty" json:"contactSales,omitempty"`
+	CtaLabel       string                         `bson:"ctaLabel,omitempty" json:"ctaLabel,omitempty"`
 	Currency       string                         `bson:"-" json:"currency,omitempty"` // set on resolved API responses only
 	CreatedAt      time.Time                      `bson:"createdAt" json:"createdAt"`
 	UpdatedAt      time.Time                      `bson:"updatedAt" json:"updatedAt"`
 }
 
+// PublicPlanCurrencyPricing exposes list price only (no Razorpay IDs).
+type PublicPlanCurrencyPricing struct {
+	Amount int `json:"amount"`
+}
+
+// PublicPlan is the customer-facing plan view (Razorpay details stay admin/server-only).
+type PublicPlan struct {
+	ID           string                               `json:"id,omitempty"`
+	PlanID       string                               `json:"planId"`
+	Name         string                               `json:"name"`
+	Description  string                               `json:"description"`
+	Price        int                                  `json:"price"`
+	Currency     string                               `json:"currency,omitempty"`
+	Credits      int                                  `json:"credits"`
+	Features     []string                             `json:"features,omitempty"`
+	DisplayOrder int                                  `json:"displayOrder,omitempty"`
+	IsPopular    bool                                 `json:"isPopular,omitempty"`
+	ContactSales bool                                 `json:"contactSales,omitempty"`
+	CtaLabel     string                               `json:"ctaLabel,omitempty"`
+	Pricing      map[string]PublicPlanCurrencyPricing `json:"pricing,omitempty"`
+}
+
 type CreatePlanRequest struct {
-	PlanID         string                         `json:"planId" validate:"required"`
-	RazorpayPlanID string                         `json:"razorpayPlanId"`
-	Name           string                         `json:"name" validate:"required"`
-	Description    string                         `json:"description"`
-	Price          int                            `json:"price" validate:"min=0"`
-	Credits        int                            `json:"credits" validate:"required,min=0"`
-	IsActive       bool                           `json:"isActive"`
-	Pricing        map[string]PlanCurrencyPricing `json:"pricing,omitempty"`
-	PriceUSD       int                            `json:"priceUsd,omitempty"`
-	PriceINR       int                            `json:"priceInr,omitempty"`
-	RazorpayPlanIDUSD string                      `json:"razorpayPlanIdUsd,omitempty"`
-	RazorpayPlanIDINR string                      `json:"razorpayPlanIdInr,omitempty"`
+	PlanID            string                         `json:"planId" validate:"required"`
+	RazorpayPlanID    string                         `json:"razorpayPlanId"`
+	Name              string                         `json:"name" validate:"required"`
+	Description       string                         `json:"description"`
+	Price             int                            `json:"price" validate:"min=0"`
+	Credits           int                            `json:"credits" validate:"required,min=0"`
+	IsActive          bool                           `json:"isActive"`
+	Pricing           map[string]PlanCurrencyPricing `json:"pricing,omitempty"`
+	PriceUSD          int                            `json:"priceUsd,omitempty"`
+	PriceINR          int                            `json:"priceInr,omitempty"`
+	RazorpayPlanIDUSD string                         `json:"razorpayPlanIdUsd,omitempty"`
+	RazorpayPlanIDINR string                         `json:"razorpayPlanIdInr,omitempty"`
+	Features          []string                       `json:"features,omitempty"`
+	DisplayOrder      int                            `json:"displayOrder,omitempty"`
+	IsPopular         bool                           `json:"isPopular,omitempty"`
+	ContactSales      bool                           `json:"contactSales,omitempty"`
+	CtaLabel          string                         `json:"ctaLabel,omitempty"`
 }
 
 type UpdatePlanRequest struct {
-	RazorpayPlanID    *string                         `json:"razorpayPlanId,omitempty"`
-	Name              *string                         `json:"name,omitempty"`
-	Description       *string                         `json:"description,omitempty"`
-	Price             *int                            `json:"price,omitempty"`
-	Credits           *int                            `json:"credits,omitempty"`
-	IsActive          *bool                           `json:"isActive,omitempty"`
-	Pricing           map[string]PlanCurrencyPricing `json:"pricing,omitempty"`
-	PriceUSD          *int                            `json:"priceUsd,omitempty"`
-	PriceINR          *int                            `json:"priceInr,omitempty"`
-	RazorpayPlanIDUSD *string                         `json:"razorpayPlanIdUsd,omitempty"`
-	RazorpayPlanIDINR *string                         `json:"razorpayPlanIdInr,omitempty"`
+	RazorpayPlanID    *string                          `json:"razorpayPlanId,omitempty"`
+	Name              *string                          `json:"name,omitempty"`
+	Description       *string                          `json:"description,omitempty"`
+	Price             *int                             `json:"price,omitempty"`
+	Credits           *int                             `json:"credits,omitempty"`
+	IsActive          *bool                            `json:"isActive,omitempty"`
+	Pricing           map[string]PlanCurrencyPricing   `json:"pricing,omitempty"`
+	PriceUSD          *int                             `json:"priceUsd,omitempty"`
+	PriceINR          *int                             `json:"priceInr,omitempty"`
+	RazorpayPlanIDUSD *string                          `json:"razorpayPlanIdUsd,omitempty"`
+	RazorpayPlanIDINR *string                          `json:"razorpayPlanIdInr,omitempty"`
+	Features          *[]string                        `json:"features,omitempty"`
+	DisplayOrder      *int                             `json:"displayOrder,omitempty"`
+	IsPopular         *bool                            `json:"isPopular,omitempty"`
+	ContactSales      *bool                            `json:"contactSales,omitempty"`
+	CtaLabel          *string                          `json:"ctaLabel,omitempty"`
 }
