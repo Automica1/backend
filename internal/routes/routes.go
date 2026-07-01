@@ -64,6 +64,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Post("/register", h.User.RegisterUser)
 			r.Get("/plans", h.Plan.GetActivePlans) // Public plans list
 			r.Get("/billing-config", h.Plan.GetPublicBillingConfig)
+			r.Post("/subscription/razorpay/verify-callback", h.Subscription.RazorpayVerifyCallback)
 
 			r.Route("/guest-passes", func(r chi.Router) {
 				r.Get("/balance", h.GuestPass.GetBalance)

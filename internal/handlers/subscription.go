@@ -83,6 +83,28 @@ func (h *SubscriptionHandler) VerifyPayment(w http.ResponseWriter, r *http.Reque
 	utils.SendJSONResponse(w, http.StatusOK, response)
 }
 
+func (h *SubscriptionHandler) RazorpayVerifyCallback(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid callback payload", err.Error()))
+		return
+	}
+
+	req := models.VerifyPaymentRequest{
+		RazorpayPaymentID:      r.FormValue("razorpay_payment_id"),
+		RazorpayOrderID:        r.FormValue("razorpay_order_id"),
+		RazorpaySubscriptionID: r.FormValue("razorpay_subscription_id"),
+		RazorpaySignature:      r.FormValue("razorpay_signature"),
+	}
+
+	response, err := h.subService.VerifyPayment(r.Context(), "", &req)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
 func (h *SubscriptionHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	email, ok := middleware.GetEmailFromContext(r.Context())
 	if !ok {

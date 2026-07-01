@@ -319,7 +319,11 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 			if err != nil {
 				return nil, err
 			}
-			return s.buildVerifyIdempotentResponse(ctx, userID, sub)
+			effectiveUserID, resolveErr := s.resolveVerifyUserID(sub, userID)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			return s.buildVerifyIdempotentResponse(ctx, effectiveUserID, sub)
 		}
 	}
 
@@ -328,9 +332,11 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		return nil, err
 	}
 
-	if sub.UserID != userID {
-		return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "order does not belong to user", "")
+	effectiveUserID, err := s.resolveVerifyUserID(sub, userID)
+	if err != nil {
+		return nil, err
 	}
+	userID = effectiveUserID
 
 	isUpgrade := sub.Status == "upgrading"
 	if sub.Status == "completed" {
@@ -434,6 +440,19 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		CreditsAdded:     creditsAdded,
 		RemainingCredits: balance.Credits,
 	}, nil
+}
+
+func (s *subscriptionService) resolveVerifyUserID(sub *models.Subscription, authenticatedUserID string) (string, error) {
+	if sub == nil {
+		return "", apperrors.NewAppError(apperrors.ErrNotFound, 404, "subscription not found", "")
+	}
+	if authenticatedUserID == "" {
+		return sub.UserID, nil
+	}
+	if sub.UserID != authenticatedUserID {
+		return "", apperrors.NewAppError(apperrors.ErrForbidden, 403, "order does not belong to user", "")
+	}
+	return authenticatedUserID, nil
 }
 
 func (s *subscriptionService) CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error) {
