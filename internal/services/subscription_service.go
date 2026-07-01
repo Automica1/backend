@@ -264,7 +264,8 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 	}
 
 	subID := body["id"].(string)
-	fmt.Printf("[CreateOrder] Created Subscription: %s\n", subID)
+	shortURL, _ := body["short_url"].(string)
+	fmt.Printf("[CreateOrder] Created Subscription: %s (short_url=%v)\n", subID, shortURL != "")
 
 	// Store a pending subscription record
 	sub := &models.Subscription{
@@ -286,6 +287,7 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 	return &models.SubscriptionResponse{
 		Message:        "Subscription order created successfully",
 		SubscriptionID: subID,
+		ShortURL:       shortURL,
 		Amount:         amount,
 		Currency:       currency,
 	}, nil

@@ -61,6 +61,7 @@ type SubscriptionResponse struct {
 	Message          string             `json:"message"`
 	SubscriptionID   string             `json:"subscriptionId,omitempty"`
 	OrderID          string             `json:"orderId,omitempty"`
+	ShortURL         string             `json:"shortUrl,omitempty"`
 	Amount           int                `json:"amount,omitempty"`
 	Currency         string             `json:"currency,omitempty"`
 	Status           SubscriptionStatus `json:"status,omitempty"`
