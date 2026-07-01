@@ -142,15 +142,34 @@ func NewSubscriptionService(subRepo repository.SubscriptionRepository, paymentEv
 	}
 }
 
+func (s *subscriptionService) getPrimaryUserSubscription(ctx context.Context, userID string) (*models.Subscription, error) {
+	for _, status := range []models.SubscriptionStatus{
+		models.SubscriptionStatusActive,
+		models.SubscriptionStatusPastDue,
+		models.SubscriptionStatusCancelled,
+	} {
+		sub, err := s.subRepo.GetByUserIDAndStatus(ctx, userID, status)
+		if err == nil {
+			return sub, nil
+		}
+		if !apperrors.IsErrorType(err, apperrors.ErrNotFound) {
+			return nil, err
+		}
+	}
+
+	return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "subscription not found for user", "")
+}
+
 func (s *subscriptionService) resolveBillingCurrency(ctx context.Context, userID, requestedCurrency, contact, countryCode, locale, timezone string) string {
 	var subscriptionCurrency, userCurrency string
 
-	if sub, err := s.subRepo.GetByUserID(ctx, userID); err == nil && sub != nil {
-		if sub.Status == models.SubscriptionStatusActive ||
-			sub.Status == models.SubscriptionStatusPastDue ||
-			(sub.Status == models.SubscriptionStatusCancelled && sub.CancelAtCycleEnd) {
-			subscriptionCurrency = sub.Currency
-		}
+	if sub, err := s.subRepo.GetByUserIDAndStatus(ctx, userID, models.SubscriptionStatusActive); err == nil && sub != nil {
+		subscriptionCurrency = sub.Currency
+	} else if sub, err := s.subRepo.GetByUserIDAndStatus(ctx, userID, models.SubscriptionStatusPastDue); err == nil && sub != nil {
+		subscriptionCurrency = sub.Currency
+	} else if sub, err := s.getPrimaryUserSubscription(ctx, userID); err == nil && sub != nil &&
+		sub.Status == models.SubscriptionStatusCancelled && sub.CancelAtCycleEnd {
+		subscriptionCurrency = sub.Currency
 	}
 
 	if user, err := s.userService.GetUserByEmail(ctx, userID); err == nil && user != nil {
@@ -185,10 +204,8 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "plan is not configured for automated billing in "+currency, "")
 	}
 
-	if reused, err := s.reuseOrSupersedePendingCheckout(ctx, userID, planID, currency, amount); err != nil {
+	if err := s.supersedePendingCheckout(ctx, userID); err != nil {
 		return nil, err
-	} else if reused != nil {
-		return reused, nil
 	}
 
 	params := map[string]interface{}{
@@ -419,7 +436,7 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 
 func (s *subscriptionService) CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error) {
 	// 1. Get current subscription
-	sub, err := s.subRepo.GetByUserID(ctx, userID)
+	sub, err := s.getPrimaryUserSubscription(ctx, userID)
 	if err != nil {
 		return 0, "", err
 	}
@@ -512,7 +529,7 @@ func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, ne
 	fmt.Printf("[CreateUpgradeOrder] Razorpay Order Created: %s\n", orderID)
 
 	// Fetch current sub to get email
-	currentSub, _ := s.subRepo.GetByUserID(ctx, userID)
+	currentSub, _ := s.getPrimaryUserSubscription(ctx, userID)
 	email := ""
 	if currentSub != nil {
 		email = currentSub.Email
@@ -546,7 +563,7 @@ func (s *subscriptionService) CreateUpgradeOrder(ctx context.Context, userID, ne
 
 func (s *subscriptionService) DowngradeSubscription(ctx context.Context, userID, newPlanID string) error {
 	// 1. Get current subscription
-	sub, err := s.subRepo.GetByUserID(ctx, userID)
+	sub, err := s.getPrimaryUserSubscription(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -570,7 +587,7 @@ func (s *subscriptionService) DowngradeSubscription(ctx context.Context, userID,
 }
 
 func (s *subscriptionService) GetSubscriptionStatus(ctx context.Context, userID string) (*models.SubscriptionStatusResponse, error) {
-	sub, err := s.subRepo.GetByUserID(ctx, userID)
+	sub, err := s.getPrimaryUserSubscription(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -599,13 +616,11 @@ func (s *subscriptionService) GetSubscriptionStatus(ctx context.Context, userID 
 }
 
 func (s *subscriptionService) CancelSubscription(ctx context.Context, userID string) error {
-	// 1. Get current subscription
-	sub, err := s.subRepo.GetByUserID(ctx, userID)
+	sub, err := s.getPrimaryUserSubscription(ctx, userID)
 	if err != nil {
 		return err
 	}
 
-	// 2. Only active or past_due can be cancelled
 	if sub.Status != models.SubscriptionStatusActive && sub.Status != models.SubscriptionStatusPastDue {
 		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription to cancel", "")
 	}
@@ -614,18 +629,21 @@ func (s *subscriptionService) CancelSubscription(ctx context.Context, userID str
 		return nil
 	}
 
-	// 3. Ask Razorpay to cancel at the end of the billing cycle.
-	if _, err := s.razorpay.CancelSubscription(sub.SubscriptionID, map[string]interface{}{
-		"cancel_at_cycle_end": 1,
-	}); err != nil {
+	cancelAtCycleEnd, err := s.scheduleRazorpayCancellation(sub.SubscriptionID)
+	if err != nil {
 		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to schedule razorpay cancellation", err.Error())
 	}
 
-	// 4. Persist scheduled-cancellation metadata locally while keeping access active.
 	now := time.Now()
-	sub.CancelAtCycleEnd = true
-	sub.CancelScheduledAt = &now
 	sub.UpdatedAt = now
+	if cancelAtCycleEnd {
+		sub.CancelAtCycleEnd = true
+		sub.CancelScheduledAt = &now
+	} else {
+		sub.Status = models.SubscriptionStatusCancelled
+		sub.CancelledAt = &now
+		sub.CancelAtCycleEnd = false
+	}
 
 	return s.subRepo.Update(ctx, sub)
 }
@@ -809,36 +827,48 @@ func (s *subscriptionService) ResetSubscriptionForTesting(ctx context.Context, s
 	}, nil
 }
 
-func (s *subscriptionService) reuseOrSupersedePendingCheckout(
-	ctx context.Context,
-	userID, planID, currency string,
-	amount int,
-) (*models.SubscriptionResponse, error) {
-	pendingSub, err := s.subRepo.GetByUserIDAndStatus(ctx, userID, models.SubscriptionStatusCreated)
+func (s *subscriptionService) supersedePendingCheckout(ctx context.Context, userID string) error {
+	subs, err := s.subRepo.ListAllByUserID(ctx, userID)
 	if err != nil {
-		if apperrors.IsErrorType(err, apperrors.ErrNotFound) {
-			return nil, nil
+		return err
+	}
+
+	for _, pendingSub := range subs {
+		if pendingSub.Status != models.SubscriptionStatusCreated {
+			continue
 		}
-		return nil, err
+		if cancelErr := s.cancelRazorpaySubscriptionImmediately(pendingSub.SubscriptionID); cancelErr != nil {
+			fmt.Printf("[CreateOrder] Failed to cancel stale pending subscription %s: %v\n", pendingSub.SubscriptionID, cancelErr)
+		}
+		if statusErr := s.subRepo.UpdateStatus(ctx, pendingSub.SubscriptionID, models.SubscriptionStatusExpired); statusErr != nil {
+			fmt.Printf("[CreateOrder] Failed to expire stale pending subscription %s: %v\n", pendingSub.SubscriptionID, statusErr)
+		}
 	}
 
-	if pendingSub.PlanID == planID && pendingSub.Currency == currency {
-		return &models.SubscriptionResponse{
-			Message:        "Subscription order created successfully",
-			SubscriptionID: pendingSub.SubscriptionID,
-			Amount:         amount,
-			Currency:       currency,
-		}, nil
+	return nil
+}
+
+func (s *subscriptionService) scheduleRazorpayCancellation(subscriptionID string) (bool, error) {
+	remote, err := s.razorpay.FetchSubscription(subscriptionID)
+	if err != nil {
+		return false, err
 	}
 
-	if cancelErr := s.cancelRazorpaySubscriptionImmediately(pendingSub.SubscriptionID); cancelErr != nil {
-		fmt.Printf("[CreateOrder] Failed to cancel stale pending subscription %s: %v\n", pendingSub.SubscriptionID, cancelErr)
+	status, _ := remote["status"].(string)
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "completed", "expired":
+		return false, nil
+	case "active":
+		_, err = s.razorpay.CancelSubscription(subscriptionID, map[string]interface{}{
+			"cancel_at_cycle_end": true,
+		})
+		return true, err
+	default:
+		_, err = s.razorpay.CancelSubscription(subscriptionID, map[string]interface{}{
+			"cancel_at_cycle_end": false,
+		})
+		return false, err
 	}
-	if statusErr := s.subRepo.UpdateStatus(ctx, pendingSub.SubscriptionID, models.SubscriptionStatusExpired); statusErr != nil {
-		fmt.Printf("[CreateOrder] Failed to expire stale pending subscription %s: %v\n", pendingSub.SubscriptionID, statusErr)
-	}
-
-	return nil, nil
 }
 
 func (s *subscriptionService) cancelRazorpaySubscriptionImmediately(subscriptionID string) error {
@@ -854,7 +884,7 @@ func (s *subscriptionService) cancelRazorpaySubscriptionImmediately(subscription
 	}
 
 	_, err = s.razorpay.CancelSubscription(subscriptionID, map[string]interface{}{
-		"cancel_at_cycle_end": 0,
+		"cancel_at_cycle_end": false,
 	})
 	return err
 }

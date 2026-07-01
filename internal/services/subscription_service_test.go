@@ -320,8 +320,8 @@ func TestCancelSubscriptionSchedulesRazorpayCycleEndCancellation(t *testing.T) {
 	if gateway.cancelCalls[0].subscriptionID != "sub_123" {
 		t.Fatalf("expected subscription ID sub_123, got %s", gateway.cancelCalls[0].subscriptionID)
 	}
-	if got := gateway.cancelCalls[0].data["cancel_at_cycle_end"]; got != 1 {
-		t.Fatalf("expected cancel_at_cycle_end=1, got %#v", got)
+	if got := gateway.cancelCalls[0].data["cancel_at_cycle_end"]; got != true {
+		t.Fatalf("expected cancel_at_cycle_end=true, got %#v", got)
 	}
 
 	updated := repo.subs["sub_123"]
@@ -838,7 +838,7 @@ func TestResetSubscriptionForTestingRequiresEnvAndTestKey(t *testing.T) {
 	if len(gateway.cancelCalls) != 1 {
 		t.Fatalf("expected one immediate cancel call, got %d", len(gateway.cancelCalls))
 	}
-	if got := gateway.cancelCalls[0].data["cancel_at_cycle_end"]; got != 0 {
+	if got := gateway.cancelCalls[0].data["cancel_at_cycle_end"]; got != false {
 		t.Fatalf("expected immediate cancel, got %#v", got)
 	}
 	if len(repo.subs) != 0 {
