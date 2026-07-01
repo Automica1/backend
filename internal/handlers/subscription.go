@@ -145,6 +145,21 @@ func (h *SubscriptionHandler) CancelSubscription(w http.ResponseWriter, r *http.
 	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"message": "Subscription cancellation scheduled successfully"})
 }
 
+func (h *SubscriptionHandler) ResumeSubscription(w http.ResponseWriter, r *http.Request) {
+	email, ok := middleware.GetEmailFromContext(r.Context())
+	if !ok {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrUnauthorized, 401, "email not found", ""))
+		return
+	}
+
+	if err := h.subService.ResumeSubscription(r.Context(), email); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, map[string]string{"message": "Subscription resumed successfully"})
+}
+
 func (h *SubscriptionHandler) CalculateUpgradePrice(w http.ResponseWriter, r *http.Request) {
 	email, ok := middleware.GetEmailFromContext(r.Context())
 	if !ok {

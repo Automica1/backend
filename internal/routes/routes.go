@@ -97,6 +97,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Post("/upgrade/create", h.Subscription.CreateUpgradeOrder)
 				r.Post("/downgrade", h.Subscription.DowngradeSubscription)
 				r.Post("/cancel", h.Subscription.CancelSubscription)
+				r.Post("/resume", h.Subscription.ResumeSubscription)
 			})
 
 			r.Route("/tokens", func(r chi.Router) {

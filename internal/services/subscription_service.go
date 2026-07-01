@@ -103,6 +103,7 @@ type SubscriptionService interface {
 	CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error)
 	DowngradeSubscription(ctx context.Context, userID, newPlanID string) error
 	CancelSubscription(ctx context.Context, userID string) error
+	ResumeSubscription(ctx context.Context, userID string) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 	GetActiveSubscriptionCount(ctx context.Context) (int64, error)
 	ListAdminSubscriptions(ctx context.Context, query models.AdminSubscriptionQuery) (*models.AdminSubscriptionListResponse, error)
@@ -371,6 +372,10 @@ func (s *subscriptionService) VerifyPayment(ctx context.Context, userID string, 
 		if newPlan != nil {
 			activeSub.Amount = billing.PlanAmountInCurrency(newPlan, activeSub.Currency)
 		}
+		activeSub.PendingPlanID = ""
+		activeSub.PlanChangeDate = nil
+		activeSub.CancelAtCycleEnd = false
+		activeSub.CancelScheduledAt = nil
 		activeSub.UpdatedAt = time.Now()
 		if err := s.subRepo.Update(ctx, activeSub); err != nil {
 			return nil, err
@@ -593,10 +598,32 @@ func (s *subscriptionService) DowngradeSubscription(ctx context.Context, userID,
 		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription to downgrade", "")
 	}
 
+	if sub.CancelAtCycleEnd {
+		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "cannot schedule downgrade while cancellation is pending", "")
+	}
+
 	// 2. Get new plan details
 	newPlan, err := s.planService.GetPlanByID(ctx, newPlanID)
 	if err != nil {
 		return err
+	}
+
+	currentPlan, err := s.planService.GetPlanByID(ctx, sub.PlanID)
+	if err != nil {
+		return err
+	}
+
+	currency := sub.Currency
+	if currency == "" {
+		currency = billing.CurrencyUSD
+	}
+	newAmount := billing.PlanAmountInCurrency(newPlan, currency)
+	currentAmount := billing.PlanAmountInCurrency(currentPlan, currency)
+	if newAmount <= 0 || currentAmount <= 0 {
+		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "plan pricing is not configured for "+currency, "")
+	}
+	if newAmount >= currentAmount {
+		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "new plan price must be lower for downgrade", "")
 	}
 
 	// 3. Mark for downgrade
@@ -657,6 +684,8 @@ func (s *subscriptionService) CancelSubscription(ctx context.Context, userID str
 
 	now := time.Now()
 	sub.UpdatedAt = now
+	sub.PendingPlanID = ""
+	sub.PlanChangeDate = nil
 	if cancelAtCycleEnd {
 		sub.CancelAtCycleEnd = true
 		sub.CancelScheduledAt = &now
@@ -666,6 +695,33 @@ func (s *subscriptionService) CancelSubscription(ctx context.Context, userID str
 		sub.CancelAtCycleEnd = false
 	}
 
+	return s.subRepo.Update(ctx, sub)
+}
+
+func (s *subscriptionService) ResumeSubscription(ctx context.Context, userID string) error {
+	sub, err := s.getPrimaryUserSubscription(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if sub.Status != models.SubscriptionStatusActive {
+		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription to resume", "")
+	}
+
+	if !sub.CancelAtCycleEnd {
+		return nil
+	}
+
+	_, err = s.razorpay.UpdateSubscription(sub.SubscriptionID, map[string]interface{}{
+		"cancel_at_cycle_end": false,
+	})
+	if err != nil {
+		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to resume razorpay subscription", err.Error())
+	}
+
+	sub.CancelAtCycleEnd = false
+	sub.CancelScheduledAt = nil
+	sub.UpdatedAt = time.Now()
 	return s.subRepo.Update(ctx, sub)
 }
 

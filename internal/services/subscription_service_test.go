@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -17,9 +18,17 @@ import (
 
 type fakeRazorpayGateway struct {
 	cancelCalls []cancelCall
+	updateCalls []updateCall
 	cancelErr   error
+	updateErr   error
 	fetchResult map[string]interface{}
 	fetchErr    error
+	subCounter  int
+}
+
+type updateCall struct {
+	subscriptionID string
+	data           map[string]interface{}
 }
 
 type cancelCall struct {
@@ -36,10 +45,25 @@ func (f *fakeRazorpayGateway) CreateOrder(data map[string]interface{}) (map[stri
 }
 
 func (f *fakeRazorpayGateway) CreateSubscription(data map[string]interface{}) (map[string]interface{}, error) {
-	return map[string]interface{}{"id": "sub_test"}, nil
+	f.subCounter++
+	return map[string]interface{}{
+		"id":        fmt.Sprintf("sub_test_%d", f.subCounter),
+		"short_url": "https://rzp.io/test",
+	}, nil
 }
 
 func (f *fakeRazorpayGateway) UpdateSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error) {
+	callData := map[string]interface{}{}
+	for k, v := range data {
+		callData[k] = v
+	}
+	f.updateCalls = append(f.updateCalls, updateCall{
+		subscriptionID: subscriptionID,
+		data:           callData,
+	})
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
 	return map[string]interface{}{"id": subscriptionID}, nil
 }
 
@@ -265,6 +289,7 @@ func newTestSubscriptionService(repo *fakeSubscriptionRepo, gateway RazorpayGate
 		emailService:     emailSvc,
 		razorpay:         gateway,
 		razorpayKey:      "rzp_test_fake",
+		razorpaySecret:   "test_secret",
 		creditsService:   &fakeCreditsService{},
 		planService:      &fakePlanService{},
 		userService:      &fakeUserService{billingCurrency: "INR"},
