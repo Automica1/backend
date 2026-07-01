@@ -146,7 +146,11 @@ func (s *subscriptionService) resolveBillingCurrency(ctx context.Context, userID
 	var subscriptionCurrency, userCurrency string
 
 	if sub, err := s.subRepo.GetByUserID(ctx, userID); err == nil && sub != nil {
-		subscriptionCurrency = sub.Currency
+		if sub.Status == models.SubscriptionStatusActive ||
+			sub.Status == models.SubscriptionStatusPastDue ||
+			(sub.Status == models.SubscriptionStatusCancelled && sub.CancelAtCycleEnd) {
+			subscriptionCurrency = sub.Currency
+		}
 	}
 
 	if user, err := s.userService.GetUserByEmail(ctx, userID); err == nil && user != nil {
@@ -179,6 +183,12 @@ func (s *subscriptionService) CreateOrder(ctx context.Context, userID, email, na
 	amount, razorpayPlanID, ok := billing.ResolvePlanPricing(plan, currency)
 	if !ok {
 		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "plan is not configured for automated billing in "+currency, "")
+	}
+
+	if reused, err := s.reuseOrSupersedePendingCheckout(ctx, userID, planID, currency, amount); err != nil {
+		return nil, err
+	} else if reused != nil {
+		return reused, nil
 	}
 
 	params := map[string]interface{}{
@@ -797,6 +807,38 @@ func (s *subscriptionService) ResetSubscriptionForTesting(ctx context.Context, s
 		LocalRecordsDeleted:    deleted,
 		BillingCurrencyCleared: billingCleared,
 	}, nil
+}
+
+func (s *subscriptionService) reuseOrSupersedePendingCheckout(
+	ctx context.Context,
+	userID, planID, currency string,
+	amount int,
+) (*models.SubscriptionResponse, error) {
+	pendingSub, err := s.subRepo.GetByUserIDAndStatus(ctx, userID, models.SubscriptionStatusCreated)
+	if err != nil {
+		if apperrors.IsErrorType(err, apperrors.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if pendingSub.PlanID == planID && pendingSub.Currency == currency {
+		return &models.SubscriptionResponse{
+			Message:        "Subscription order created successfully",
+			SubscriptionID: pendingSub.SubscriptionID,
+			Amount:         amount,
+			Currency:       currency,
+		}, nil
+	}
+
+	if cancelErr := s.cancelRazorpaySubscriptionImmediately(pendingSub.SubscriptionID); cancelErr != nil {
+		fmt.Printf("[CreateOrder] Failed to cancel stale pending subscription %s: %v\n", pendingSub.SubscriptionID, cancelErr)
+	}
+	if statusErr := s.subRepo.UpdateStatus(ctx, pendingSub.SubscriptionID, models.SubscriptionStatusExpired); statusErr != nil {
+		fmt.Printf("[CreateOrder] Failed to expire stale pending subscription %s: %v\n", pendingSub.SubscriptionID, statusErr)
+	}
+
+	return nil, nil
 }
 
 func (s *subscriptionService) cancelRazorpaySubscriptionImmediately(subscriptionID string) error {

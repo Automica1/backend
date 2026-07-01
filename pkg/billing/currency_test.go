@@ -22,12 +22,12 @@ func TestResolveBillingCurrency(t *testing.T) {
 			want: CurrencyUSD,
 		},
 		{
-			name: "user preference",
+			name: "explicit request beats stored preference",
 			in: CurrencyInput{
 				UserBillingCurrency: "INR",
 				RequestedCurrency:   "USD",
 			},
-			want: CurrencyINR,
+			want: CurrencyUSD,
 		},
 		{
 			name: "request",

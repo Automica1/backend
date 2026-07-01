@@ -97,10 +97,10 @@ func ResolveBillingCurrency(in CurrencyInput) string {
 	if c := NormalizeCurrency(in.SubscriptionCurrency); c != "" {
 		return c
 	}
-	if c := NormalizeCurrency(in.UserBillingCurrency); c != "" {
+	if c := NormalizeCurrency(in.RequestedCurrency); c != "" {
 		return c
 	}
-	if c := NormalizeCurrency(in.RequestedCurrency); c != "" {
+	if c := NormalizeCurrency(in.UserBillingCurrency); c != "" {
 		return c
 	}
 	if IsLikelyIndianUser(in.Contact, in.CountryCode, in.LocaleHint, in.TimezoneHint) {

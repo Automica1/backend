@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"chi-mongo-backend/internal/models"
+	apperrors "chi-mongo-backend/pkg/errors"
 )
 
 type fakeRazorpayGateway struct {
@@ -154,7 +155,7 @@ func (r *fakeSubscriptionRepo) GetByUserIDAndStatus(ctx context.Context, userID 
 		}
 	}
 	if latest == nil {
-		return nil, errors.New("subscription not found by status")
+		return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "subscription not found by status", "")
 	}
 	return latest, nil
 }
