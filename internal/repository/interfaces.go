@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"chi-mongo-backend/internal/models"
 )
@@ -16,6 +17,8 @@ type UserRepository interface {
 	UpdateActiveStatus(ctx context.Context, userID string, isActive bool) error
 	UpdateBillingCurrency(ctx context.Context, userID string, currency string) error
 	ClearBillingCurrency(ctx context.Context, userID string) error
+	UpdateBetaFeedbackRefundCapOverride(ctx context.Context, userID string, cap *int) error
+	SetBetaFeedbackRefundBudgetResetAt(ctx context.Context, userID string, at time.Time) error
 	// Admin methods
 	GetAll(ctx context.Context) ([]models.User, error)
 	GetTotalCount(ctx context.Context) (int64, error)

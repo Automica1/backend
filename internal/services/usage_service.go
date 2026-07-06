@@ -46,8 +46,9 @@ func (s *usageService) TrackUsage(ctx context.Context, req *models.UsageTracking
 		RequestID:   req.RequestID,
 		IPAddress:   req.IPAddress,
 		UserAgent:   req.UserAgent,
-		AuthMethod:  req.AuthMethod,
-		ProcessTime: req.ProcessTime,
+		AuthMethod:     req.AuthMethod,
+		ProcessTime:    req.ProcessTime,
+		BetaServiceTag: req.BetaServiceTag,
 	}
 
 	return s.usageRepo.CreateUsage(ctx, usage)

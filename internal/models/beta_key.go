@@ -22,6 +22,7 @@ type BetaKey struct {
 	KeyHash           string             `bson:"keyHash" json:"-"`
 	KeyPrefix         string             `bson:"keyPrefix" json:"keyPrefix"`
 	ServiceName       string             `bson:"serviceName" json:"serviceName"`
+	BetaServiceTag    string             `bson:"betaServiceTag" json:"betaServiceTag"`
 	Label             string             `bson:"label" json:"label"`
 	AssignedUserEmail string             `bson:"assignedUserEmail" json:"assignedUserEmail"`
 	CreatedBy         string             `bson:"createdBy" json:"createdBy"`
@@ -35,6 +36,7 @@ type BetaKey struct {
 
 type GenerateBetaKeyRequest struct {
 	ServiceName       string `json:"serviceName"`
+	BetaServiceTag    string `json:"betaServiceTag"`
 	Label             string `json:"label"`
 	AssignedUserEmail string `json:"assignedUserEmail"`
 	ExpiresInDays     *int   `json:"expiresInDays,omitempty"`
@@ -45,6 +47,7 @@ type GenerateBetaKeyResponse struct {
 	BetaKey           string     `json:"betaKey"`
 	KeyPrefix         string     `json:"keyPrefix"`
 	ServiceName       string     `json:"serviceName"`
+	BetaServiceTag    string     `json:"betaServiceTag"`
 	Label             string     `json:"label"`
 	AssignedUserEmail string     `json:"assignedUserEmail"`
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
@@ -62,8 +65,39 @@ type RevokeBetaKeyResponse struct {
 	ID      string `json:"id"`
 }
 
+// ResolveBetaKeyRequest validates a beta key for Try API before inference.
+type ResolveBetaKeyRequest struct {
+	ServiceName string `json:"serviceName"`
+	BetaKey     string `json:"betaKey"`
+}
+
+// ResolveBetaKeyResponse tells the UI whether GPU pool controls are needed.
+type ResolveBetaKeyResponse struct {
+	Valid           bool   `json:"valid"`
+	BetaServiceTag  string `json:"betaServiceTag,omitempty"`
+	Label           string `json:"label,omitempty"`
+	RequiresGpuPool bool   `json:"requiresGpuPool"`
+	KeyPrefix       string `json:"keyPrefix,omitempty"`
+}
+
+func (r *ResolveBetaKeyRequest) Validate() error {
+	r.ServiceName = strings.TrimSpace(r.ServiceName)
+	r.BetaKey = strings.TrimSpace(r.BetaKey)
+	if r.ServiceName == "" {
+		return errors.New("serviceName is required")
+	}
+	if !IsBetaServiceSupported(r.ServiceName) {
+		return errors.New("beta is not supported for this service")
+	}
+	if r.BetaKey == "" {
+		return errors.New("betaKey is required")
+	}
+	return nil
+}
+
 func (r *GenerateBetaKeyRequest) Validate() error {
 	r.ServiceName = strings.TrimSpace(r.ServiceName)
+	r.BetaServiceTag = normalizeBetaServiceTag(r.BetaServiceTag)
 	r.Label = strings.TrimSpace(r.Label)
 	r.AssignedUserEmail = strings.TrimSpace(strings.ToLower(r.AssignedUserEmail))
 
@@ -72,6 +106,12 @@ func (r *GenerateBetaKeyRequest) Validate() error {
 	}
 	if !IsBetaServiceSupported(r.ServiceName) {
 		return errors.New("beta is not supported for this service")
+	}
+	if r.BetaServiceTag == "" {
+		return errors.New("betaServiceTag is required")
+	}
+	if !IsValidBetaServiceTag(r.BetaServiceTag) {
+		return errors.New("invalid betaServiceTag format")
 	}
 	if r.AssignedUserEmail == "" {
 		return errors.New("assignedUserEmail is required")

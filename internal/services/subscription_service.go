@@ -29,6 +29,7 @@ type RazorpayGateway interface {
 	CreateSubscription(data map[string]interface{}) (map[string]interface{}, error)
 	UpdateSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error)
 	CancelSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error)
+	CancelScheduledChanges(subscriptionID string) (map[string]interface{}, error)
 	FetchSubscription(subscriptionID string) (map[string]interface{}, error)
 }
 
@@ -64,6 +65,55 @@ func (g *razorpayGateway) UpdateSubscription(subscriptionID string, data map[str
 
 func (g *razorpayGateway) CancelSubscription(subscriptionID string, data map[string]interface{}) (map[string]interface{}, error) {
 	return g.client.Subscription.Cancel(subscriptionID, data, nil)
+}
+
+func (g *razorpayGateway) CancelScheduledChanges(subscriptionID string) (map[string]interface{}, error) {
+	return g.postSubscriptionAction(subscriptionID, "cancel_scheduled_changes", nil)
+}
+
+func (g *razorpayGateway) postSubscriptionAction(subscriptionID, action string, data map[string]interface{}) (map[string]interface{}, error) {
+	var body io.Reader
+	if data != nil {
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			return nil, err
+		}
+		body = strings.NewReader(string(encoded))
+	}
+
+	url := fmt.Sprintf("https://api.razorpay.com/v1/subscriptions/%s/%s", subscriptionID, action)
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(g.key, g.secret)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("razorpay %s failed: %s", action, strings.TrimSpace(string(respBody)))
+	}
+
+	var payload map[string]interface{}
+	if len(respBody) == 0 {
+		return map[string]interface{}{"id": subscriptionID}, nil
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func (g *razorpayGateway) FetchSubscription(subscriptionID string) (map[string]interface{}, error) {
@@ -102,6 +152,7 @@ type SubscriptionService interface {
 	CreateUpgradeOrder(ctx context.Context, userID, newPlanID string) (*models.SubscriptionResponse, error)
 	CalculateUpgradePrice(ctx context.Context, userID, newPlanID string) (int, string, error)
 	DowngradeSubscription(ctx context.Context, userID, newPlanID string) error
+	ClearPendingPlanChange(ctx context.Context, userID string) error
 	CancelSubscription(ctx context.Context, userID string) error
 	ResumeSubscription(ctx context.Context, userID string) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
@@ -599,7 +650,11 @@ func (s *subscriptionService) DowngradeSubscription(ctx context.Context, userID,
 	}
 
 	if sub.CancelAtCycleEnd {
-		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "cannot schedule downgrade while cancellation is pending", "")
+		if err := s.resumeRazorpayScheduledCancellation(sub.SubscriptionID); err != nil {
+			fmt.Printf("[DowngradeSubscription] best-effort razorpay undo failed for %s: %v\n", sub.SubscriptionID, err)
+		}
+		sub.CancelAtCycleEnd = false
+		sub.CancelScheduledAt = nil
 	}
 
 	// 2. Get new plan details
@@ -634,10 +689,53 @@ func (s *subscriptionService) DowngradeSubscription(ctx context.Context, userID,
 	return s.subRepo.Update(ctx, sub)
 }
 
+func normalizeSubscriptionLifecycle(sub *models.Subscription) bool {
+	if sub == nil {
+		return false
+	}
+	dirty := false
+	if sub.CancelAtCycleEnd && sub.PendingPlanID != "" {
+		sub.PendingPlanID = ""
+		sub.PlanChangeDate = nil
+		dirty = true
+	}
+	if !sub.CancelAtCycleEnd && sub.CancelScheduledAt != nil {
+		sub.CancelScheduledAt = nil
+		dirty = true
+	}
+	return dirty
+}
+
+func (s *subscriptionService) ClearPendingPlanChange(ctx context.Context, userID string) error {
+	sub, err := s.getPrimaryUserSubscription(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if sub.Status != models.SubscriptionStatusActive {
+		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription", "")
+	}
+	if sub.PendingPlanID == "" {
+		return nil
+	}
+
+	sub.PendingPlanID = ""
+	sub.PlanChangeDate = nil
+	sub.UpdatedAt = time.Now()
+	return s.subRepo.Update(ctx, sub)
+}
+
 func (s *subscriptionService) GetSubscriptionStatus(ctx context.Context, userID string) (*models.SubscriptionStatusResponse, error) {
 	sub, err := s.getPrimaryUserSubscription(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	if normalizeSubscriptionLifecycle(sub) {
+		sub.UpdatedAt = time.Now()
+		if err := s.subRepo.Update(ctx, sub); err != nil {
+			return nil, err
+		}
 	}
 
 	response := &models.SubscriptionStatusResponse{
@@ -674,25 +772,39 @@ func (s *subscriptionService) CancelSubscription(ctx context.Context, userID str
 	}
 
 	if sub.CancelAtCycleEnd && sub.Status == models.SubscriptionStatusActive {
+		if sub.PendingPlanID != "" {
+			sub.PendingPlanID = ""
+			sub.PlanChangeDate = nil
+			sub.UpdatedAt = time.Now()
+			return s.subRepo.Update(ctx, sub)
+		}
 		return nil
-	}
-
-	cancelAtCycleEnd, err := s.scheduleRazorpayCancellation(sub.SubscriptionID)
-	if err != nil {
-		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to schedule razorpay cancellation", err.Error())
 	}
 
 	now := time.Now()
 	sub.UpdatedAt = now
 	sub.PendingPlanID = ""
 	sub.PlanChangeDate = nil
-	if cancelAtCycleEnd {
+
+	switch sub.Status {
+	case models.SubscriptionStatusActive, models.SubscriptionStatusPastDue:
+		// Keep Razorpay active until the final cycle charge is processed in the webhook.
+		// This allows users to resume before the period ends without Razorpay undo APIs.
 		sub.CancelAtCycleEnd = true
 		sub.CancelScheduledAt = &now
-	} else {
-		sub.Status = models.SubscriptionStatusCancelled
-		sub.CancelledAt = &now
-		sub.CancelAtCycleEnd = false
+	default:
+		cancelAtCycleEnd, err := s.scheduleRazorpayCancellation(sub.SubscriptionID)
+		if err != nil {
+			return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to schedule razorpay cancellation", err.Error())
+		}
+		if cancelAtCycleEnd {
+			sub.CancelAtCycleEnd = true
+			sub.CancelScheduledAt = &now
+		} else {
+			sub.Status = models.SubscriptionStatusCancelled
+			sub.CancelledAt = &now
+			sub.CancelAtCycleEnd = false
+		}
 	}
 
 	return s.subRepo.Update(ctx, sub)
@@ -708,20 +820,70 @@ func (s *subscriptionService) ResumeSubscription(ctx context.Context, userID str
 		return apperrors.NewAppError(apperrors.ErrBadRequest, 400, "no active subscription to resume", "")
 	}
 
-	if !sub.CancelAtCycleEnd {
+	dirty := false
+	if sub.CancelAtCycleEnd {
+		if err := s.resumeRazorpayScheduledCancellation(sub.SubscriptionID); err != nil {
+			fmt.Printf("[ResumeSubscription] best-effort razorpay undo failed for %s: %v\n", sub.SubscriptionID, err)
+		}
+		sub.CancelAtCycleEnd = false
+		sub.CancelScheduledAt = nil
+		dirty = true
+	} else if sub.CancelScheduledAt != nil {
+		sub.CancelScheduledAt = nil
+		dirty = true
+	}
+
+	if !dirty {
 		return nil
 	}
 
-	_, err = s.razorpay.UpdateSubscription(sub.SubscriptionID, map[string]interface{}{
-		"cancel_at_cycle_end": false,
-	})
+	sub.UpdatedAt = time.Now()
+	return s.subRepo.Update(ctx, sub)
+}
+
+func (s *subscriptionService) resumeRazorpayScheduledCancellation(subscriptionID string) error {
+	remote, err := s.razorpay.FetchSubscription(subscriptionID)
 	if err != nil {
-		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to resume razorpay subscription", err.Error())
+		return err
 	}
 
+	cancelAtCycleEnd, hasCancelFlag := asBool(remote["cancel_at_cycle_end"])
+	if hasCancelFlag && !cancelAtCycleEnd {
+		return nil
+	}
+	if !hasCancelFlag || !cancelAtCycleEnd {
+		return nil
+	}
+
+	if _, err := s.razorpay.CancelScheduledChanges(subscriptionID); err != nil {
+		return err
+	}
+
+	remote, err = s.razorpay.FetchSubscription(subscriptionID)
+	if err != nil {
+		return err
+	}
+	if stillScheduled, ok := asBool(remote["cancel_at_cycle_end"]); ok && stillScheduled {
+		return fmt.Errorf("razorpay subscription is still scheduled to cancel at cycle end")
+	}
+	return nil
+}
+
+func (s *subscriptionService) finalizeScheduledCancellation(ctx context.Context, sub *models.Subscription) error {
+	if sub == nil || !sub.CancelAtCycleEnd {
+		return nil
+	}
+
+	if err := s.cancelRazorpaySubscriptionImmediately(sub.SubscriptionID); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	sub.Status = models.SubscriptionStatusCancelled
+	sub.CancelledAt = &now
 	sub.CancelAtCycleEnd = false
 	sub.CancelScheduledAt = nil
-	sub.UpdatedAt = time.Now()
+	sub.UpdatedAt = now
 	return s.subRepo.Update(ctx, sub)
 }
 
@@ -1179,6 +1341,10 @@ func (s *subscriptionService) HandleWebhook(ctx context.Context, payload *models
 				nextBilling = time.Now().AddDate(0, 1, 0)
 			}
 			go s.emailService.SendSubscriptionConfirmation(sub.Email, sub.Email, plan.Name, creditsAdded, nextBilling)
+		}
+
+		if sub.CancelAtCycleEnd {
+			return s.finalizeScheduledCancellation(ctx, sub)
 		}
 		return nil
 

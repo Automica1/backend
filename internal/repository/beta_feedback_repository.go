@@ -18,8 +18,10 @@ type BetaFeedbackRepository interface {
 	Create(ctx context.Context, session *models.BetaFeedbackSession) error
 	GetByID(ctx context.Context, id primitive.ObjectID) (*models.BetaFeedbackSession, error)
 	GetPendingByUserAndService(ctx context.Context, userID, serviceName string) (*models.BetaFeedbackSession, error)
+	SupersedePendingByUserAndService(ctx context.Context, userID, serviceName string) error
 	SubmitFeedback(ctx context.Context, id primitive.ObjectID, expected *models.BetaFeedbackExpectedResult, refundedCredits int) error
 	SumRefundedCreditsSince(ctx context.Context, userID string, since time.Time) (int, error)
+	GetRefundUsageSince(ctx context.Context, userID string, since time.Time) (models.BetaFeedbackRefundUsage, error)
 	List(ctx context.Context, serviceName string, limit int) ([]*models.BetaFeedbackSession, error)
 }
 
@@ -50,6 +52,19 @@ func (r *betaFeedbackRepository) GetByID(ctx context.Context, id primitive.Objec
 		return nil, err
 	}
 	return &session, nil
+}
+
+func (r *betaFeedbackRepository) SupersedePendingByUserAndService(ctx context.Context, userID, serviceName string) error {
+	_, err := r.collection.UpdateMany(
+		ctx,
+		bson.M{
+			"userId":      userID,
+			"serviceName": serviceName,
+			"status":      models.BetaFeedbackStatusPendingFeedback,
+		},
+		bson.M{"$set": bson.M{"status": models.BetaFeedbackStatusSuperseded}},
+	)
+	return err
 }
 
 func (r *betaFeedbackRepository) GetPendingByUserAndService(ctx context.Context, userID, serviceName string) (*models.BetaFeedbackSession, error) {
@@ -130,6 +145,42 @@ func (r *betaFeedbackRepository) SumRefundedCreditsSince(ctx context.Context, us
 	return results[0].Total, nil
 }
 
+func (r *betaFeedbackRepository) GetRefundUsageSince(ctx context.Context, userID string, since time.Time) (models.BetaFeedbackRefundUsage, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"userId":     userID,
+			"status":     models.BetaFeedbackStatusRefunded,
+			"refundedAt": bson.M{"$gte": since},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":   nil,
+			"total": bson.M{"$sum": "$creditsRefunded"},
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return models.BetaFeedbackRefundUsage{}, err
+	}
+	defer cursor.Close(ctx)
+
+	var results []struct {
+		Total int `bson:"total"`
+		Count int `bson:"count"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return models.BetaFeedbackRefundUsage{}, err
+	}
+	if len(results) == 0 {
+		return models.BetaFeedbackRefundUsage{}, nil
+	}
+	return models.BetaFeedbackRefundUsage{
+		TotalCredits: results[0].Total,
+		SessionCount: results[0].Count,
+	}, nil
+}
+
 func (r *betaFeedbackRepository) List(ctx context.Context, serviceName string, limit int) ([]*models.BetaFeedbackSession, error) {
 	if limit <= 0 {
 		limit = 50
@@ -138,7 +189,10 @@ func (r *betaFeedbackRepository) List(ctx context.Context, serviceName string, l
 	if serviceName != "" {
 		filter["serviceName"] = serviceName
 	}
-	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(int64(limit))
+	opts := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetLimit(int64(limit)).
+		SetProjection(bson.M{"inputs": 0})
 
 	cursor, err := r.collection.Find(ctx, filter, opts)
 	if err != nil {

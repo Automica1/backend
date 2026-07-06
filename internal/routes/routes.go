@@ -20,6 +20,7 @@ type Handlers struct {
 	QRMasking             *handlers.QRMaskingHandler
 	QRExtraction          *handlers.QRExtractionHandler
 	IDCropping            *handlers.IDCroppingHandler
+	DocumentEnhancement   *handlers.DocumentEnhancementHandler
 	SignatureVerification *handlers.SignatureVerificationHandler
 	FaceDetect            *handlers.FaceDetectionHandler
 	FaceVerify            *handlers.FaceVerificationHandler
@@ -27,11 +28,13 @@ type Handlers struct {
 	Token                 *handlers.TokenHandler
 	APIKey                *handlers.APIKeyHandler
 	BetaKey               *handlers.BetaKeyHandler
+	BetaService           *handlers.BetaServiceHandler
 	BetaFeedback          *handlers.BetaFeedbackHandler
 	GuestPass             *handlers.GuestPassHandler
 	Usage                 *handlers.UsageHandler        // Add usage handler
 	Subscription          *handlers.SubscriptionHandler // Add subscription handler
 	Plan                  *handlers.PlanHandler         // Add plan handler
+	GPUPool               *handlers.GPUPoolHandler
 }
 
 // Services struct to hold required services for middleware
@@ -96,6 +99,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Get("/upgrade/calculate", h.Subscription.CalculateUpgradePrice)
 				r.Post("/upgrade/create", h.Subscription.CreateUpgradeOrder)
 				r.Post("/downgrade", h.Subscription.DowngradeSubscription)
+				r.Post("/clear-pending-change", h.Subscription.ClearPendingPlanChange)
 				r.Post("/cancel", h.Subscription.CancelSubscription)
 				r.Post("/resume", h.Subscription.ResumeSubscription)
 			})
@@ -129,7 +133,16 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				})
 			})
 
-			// API Key management routes (JWT auth required)
+			// Shared GPU pool (beta GPU services)
+			r.Route("/gpu-pool", func(r chi.Router) {
+				r.Post("/start", h.GPUPool.Start)
+				r.Post("/stop", h.GPUPool.Stop)
+				r.Get("/status", h.GPUPool.GetStatus)
+			})
+
+			// Beta Try API helpers (authenticated testers)
+			r.Post("/beta/keys/resolve", h.BetaKey.ResolveBetaKey)
+
 			r.Route("/api-keys", func(r chi.Router) {
 				// Create new API key (replaces any existing key)
 				r.Post("/", h.APIKey.CreateAPIKey)
@@ -243,9 +256,19 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Delete("/{keyId}", h.BetaKey.RevokeBetaKey)
 				})
 
+				// Beta service registry (Admin only)
+				r.Route("/beta-services", func(r chi.Router) {
+					r.Get("/", h.BetaService.ListBetaServices)
+					r.Post("/", h.BetaService.CreateBetaService)
+					r.Put("/{tag}", h.BetaService.UpdateBetaService)
+				})
+
 				// Beta feedback sessions (Admin only)
 				r.Get("/beta-feedback/sessions", h.BetaFeedback.ListSessionsAdmin)
 				r.Get("/beta-feedback/sessions/{sessionId}", h.BetaFeedback.GetSessionAdmin)
+				r.Get("/beta-feedback/users/{userId}/refund-budget", h.BetaFeedback.GetUserRefundBudgetAdmin)
+				r.Put("/beta-feedback/users/{userId}/refund-cap-override", h.BetaFeedback.SetUserRefundCapOverrideAdmin)
+				r.Post("/beta-feedback/users/{userId}/reset-refund-budget", h.BetaFeedback.ResetUserRefundBudgetAdmin)
 
 				// Guest pass management (Admin only)
 				r.Route("/guest-passes", func(r chi.Router) {
@@ -255,6 +278,11 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Put("/{passId}", h.GuestPass.UpdatePass)
 					r.Delete("/{passId}", h.GuestPass.RevokePass)
 				})
+
+				// GPU pool admin
+				r.Get("/gpu-pools", h.GPUPool.ListAdmin)
+				r.Post("/gpu-pools/shutdown", h.GPUPool.AdminShutdown)
+				r.Post("/gpu-pools/cancel-grace", h.GPUPool.AdminCancelGrace)
 			})
 		})
 
@@ -267,6 +295,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Post("/qr-masking", h.QRMasking.ProcessQRMasking)
 			r.Post("/qr-extraction", h.QRExtraction.ProcessQRExtraction)
 			r.Post("/id-cropping", h.IDCropping.ProcessIDCropping)
+			r.Post("/document-enhancement", h.DocumentEnhancement.ProcessDocumentEnhancement)
 			r.Post("/signature-verification", h.SignatureVerification.ProcessSignatureVerification)
 			r.Post("/face-detect", h.FaceDetect.ProcessFaceDetection)
 			r.Post("/face-verification", h.FaceVerify.ProcessFaceVerification)

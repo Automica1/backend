@@ -16,13 +16,14 @@ import (
 )
 
 type SignatureVerificationHandler struct {
-	creditsService      services.CreditsService
-	userService         services.UserService
-	signatureAPIService services.SignatureVerificationAPIService
-	betaKeyService      services.BetaKeyService
-	betaFeedbackService services.BetaFeedbackService
-	usageService        services.UsageService
-	errorMapper         *apperrors.APIErrorMapper
+	creditsService       services.CreditsService
+	userService          services.UserService
+	signatureAPIService  services.SignatureVerificationAPIService
+	betaKeyService       services.BetaKeyService
+	betaServiceService   services.BetaServiceService
+	betaFeedbackService  services.BetaFeedbackService
+	usageService         services.UsageService
+	errorMapper          *apperrors.APIErrorMapper
 }
 
 func NewSignatureVerificationHandler(
@@ -30,6 +31,7 @@ func NewSignatureVerificationHandler(
 	userService services.UserService,
 	signatureAPIService services.SignatureVerificationAPIService,
 	betaKeyService services.BetaKeyService,
+	betaServiceService services.BetaServiceService,
 	betaFeedbackService services.BetaFeedbackService,
 	usageService services.UsageService,
 ) *SignatureVerificationHandler {
@@ -38,6 +40,7 @@ func NewSignatureVerificationHandler(
 		userService:         userService,
 		signatureAPIService: signatureAPIService,
 		betaKeyService:      betaKeyService,
+		betaServiceService:  betaServiceService,
 		betaFeedbackService: betaFeedbackService,
 		usageService:        usageService,
 		errorMapper:         apperrors.NewAPIErrorMapper(),
@@ -202,6 +205,8 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 	usageServiceName := h.signatureUsageServiceName(useBeta)
 	serviceName := "signature-verification"
 	var betaKeyRecord *models.BetaKey
+	var betaServiceURL string
+	var betaServiceTag string
 	if useBeta {
 		record, err := h.betaKeyService.ValidateKey(ctx, serviceName, betaKey, email)
 		if err != nil {
@@ -224,6 +229,45 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 			return
 		}
 		betaKeyRecord = record
+		betaServiceTag = strings.TrimSpace(record.BetaServiceTag)
+		if betaServiceTag == "" {
+			utils.SendErrorResponse(w, apperrors.NewAppError(
+				apperrors.ErrForbidden,
+				http.StatusForbidden,
+				"beta key is not configured for routing",
+			))
+			return
+		}
+
+		betaService, svcErr := h.betaServiceService.GetActiveByTag(ctx, betaServiceTag)
+		if svcErr != nil {
+			h.trackUsage(r.Context(), &models.UsageTrackingRequest{
+				UserID:         userID,
+				Email:          email,
+				ServiceName:    usageServiceName,
+				Endpoint:       r.URL.Path,
+				Method:         r.Method,
+				Success:        false,
+				ErrorMsg:       "beta service lookup failed: " + svcErr.Error(),
+				CreditsUsed:    0,
+				IPAddress:      h.getClientIP(r),
+				UserAgent:      r.UserAgent(),
+				AuthMethod:     h.getAuthMethod(r),
+				ProcessTime:    time.Since(startTime).Milliseconds(),
+				BetaServiceTag: betaServiceTag,
+			})
+			utils.SendErrorResponse(w, svcErr)
+			return
+		}
+		if betaService.ServiceName != serviceName {
+			utils.SendErrorResponse(w, apperrors.NewAppError(
+				apperrors.ErrForbidden,
+				http.StatusForbidden,
+				"beta service is not valid for this endpoint",
+			))
+			return
+		}
+		betaServiceURL = betaService.APIURL
 
 		if h.betaFeedbackService != nil {
 			hasPending, pendingErr := h.betaFeedbackService.HasPendingSession(ctx, userID, serviceName)
@@ -259,7 +303,8 @@ func (h *SignatureVerificationHandler) ProcessSignatureVerification(w http.Respo
 
 	// Process signature verification via external API
 	verificationResult, err := h.signatureAPIService.ProcessSignatureVerification(ctx, &req, &services.SignatureVerificationProcessOptions{
-		UseBeta: useBeta,
+		UseBeta:        useBeta,
+		BetaServiceURL: betaServiceURL,
 	})
 	if err != nil {
 		// Track API failure
@@ -542,8 +587,10 @@ func (h *SignatureVerificationHandler) createBetaFeedbackSessionIfNeeded(
 	}
 
 	betaKeyPrefix := ""
+	betaServiceTag := ""
 	if betaKeyRecord != nil {
 		betaKeyPrefix = betaKeyRecord.KeyPrefix
+		betaServiceTag = betaKeyRecord.BetaServiceTag
 	}
 
 	session, err := h.betaFeedbackService.CreateSession(ctx, &models.CreateBetaFeedbackSessionRequest{
@@ -551,6 +598,7 @@ func (h *SignatureVerificationHandler) createBetaFeedbackSessionIfNeeded(
 		Email:          email,
 		ServiceName:    serviceName,
 		BetaKeyPrefix:  betaKeyPrefix,
+		BetaServiceTag: betaServiceTag,
 		ReqID:          reqID,
 		Inputs:         inputs,
 		ActualResult:   actualResult,
@@ -586,7 +634,7 @@ func (h *SignatureVerificationHandler) betaFeedbackActualResult(
 		}
 	}
 	if runOutcome == models.BetaFeedbackRunOutcomeFailed {
-		return &models.BetaFeedbackActualResult{Classification: "Failed"}
+		return &models.BetaFeedbackActualResult{Classification: "Not-Detected"}
 	}
 	return nil
 }

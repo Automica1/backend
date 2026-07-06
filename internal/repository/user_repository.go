@@ -148,6 +148,52 @@ func (r *userRepository) ClearBillingCurrency(ctx context.Context, userID string
 	return nil
 }
 
+func (r *userRepository) UpdateBetaFeedbackRefundCapOverride(ctx context.Context, userID string, cap *int) error {
+	var update bson.M
+	if cap == nil {
+		update = bson.M{
+			"$unset": bson.M{"betaFeedbackMonthlyRefundCapOverride": ""},
+			"$set": bson.M{
+				"updatedAt": time.Now(),
+			},
+		}
+	} else {
+		update = bson.M{
+			"$set": bson.M{
+				"betaFeedbackMonthlyRefundCapOverride": *cap,
+				"updatedAt":                            time.Now(),
+			},
+		}
+	}
+
+	result, err := r.collection.UpdateOne(ctx, bson.M{"userId": userID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return apperrors.NewUserNotFoundError()
+	}
+	return nil
+}
+
+func (r *userRepository) SetBetaFeedbackRefundBudgetResetAt(ctx context.Context, userID string, at time.Time) error {
+	update := bson.M{
+		"$set": bson.M{
+			"betaFeedbackRefundBudgetResetAt": at,
+			"updatedAt":                       time.Now(),
+		},
+	}
+
+	result, err := r.collection.UpdateOne(ctx, bson.M{"userId": userID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return apperrors.NewUserNotFoundError()
+	}
+	return nil
+}
+
 // Admin methods
 func (r *userRepository) GetAll(ctx context.Context) ([]models.User, error) {
 	cursor, err := r.collection.Find(ctx, bson.M{})

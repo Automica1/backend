@@ -194,14 +194,70 @@ func (r *subscriptionRepository) List(ctx context.Context, query models.AdminSub
 	return subs, total, nil
 }
 
-func (r *subscriptionRepository) Update(ctx context.Context, sub *models.Subscription) error {
+func buildSubscriptionUpdate(sub *models.Subscription) (bson.M, error) {
 	sub.UpdatedAt = time.Now()
-	filter := bson.M{"subscriptionId": sub.SubscriptionID}
-	update := bson.M{"$set": sub}
 
-	_, err := r.collection.UpdateOne(ctx, filter, update, options.Update().SetUpsert(false))
+	raw, err := bson.Marshal(sub)
+	if err != nil {
+		return nil, err
+	}
+
+	var setFields bson.M
+	if err := bson.Unmarshal(raw, &setFields); err != nil {
+		return nil, err
+	}
+	delete(setFields, "_id")
+
+	// omitempty skips false/zero values in $set; lifecycle clears rely on explicit writes.
+	setFields["cancelAtCycleEnd"] = sub.CancelAtCycleEnd
+	if sub.PendingPlanID != "" {
+		setFields["pendingPlanId"] = sub.PendingPlanID
+	}
+	if sub.PreviousPlanID != "" {
+		setFields["previousPlanId"] = sub.PreviousPlanID
+	}
+
+	update := bson.M{"$set": setFields}
+
+	unset := bson.M{}
+	if sub.CancelScheduledAt == nil {
+		unset["cancelScheduledAt"] = ""
+	}
+	if sub.CancelledAt == nil {
+		unset["cancelledAt"] = ""
+	}
+	if sub.GracePeriodEnd == nil {
+		unset["gracePeriodEnd"] = ""
+	}
+	if sub.PlanChangeDate == nil {
+		unset["planChangeDate"] = ""
+	}
+	if sub.PendingPlanID == "" {
+		unset["pendingPlanId"] = ""
+	}
+	if sub.PreviousPlanID == "" {
+		unset["previousPlanId"] = ""
+	}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+
+	return update, nil
+}
+
+func (r *subscriptionRepository) Update(ctx context.Context, sub *models.Subscription) error {
+	filter := bson.M{"subscriptionId": sub.SubscriptionID}
+	update, err := buildSubscriptionUpdate(sub)
+	if err != nil {
+		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to build subscription update", err.Error())
+	}
+
+	result, err := r.collection.UpdateOne(ctx, filter, update, options.Update().SetUpsert(false))
 	if err != nil {
 		return apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to update subscription", err.Error())
+	}
+	if result.MatchedCount == 0 {
+		return apperrors.NewAppError(apperrors.ErrNotFound, 404, "subscription not found", "")
 	}
 	return nil
 }

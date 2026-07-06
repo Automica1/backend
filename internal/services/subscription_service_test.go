@@ -17,13 +17,15 @@ import (
 )
 
 type fakeRazorpayGateway struct {
-	cancelCalls []cancelCall
-	updateCalls []updateCall
-	cancelErr   error
-	updateErr   error
-	fetchResult map[string]interface{}
-	fetchErr    error
-	subCounter  int
+	cancelCalls                 []cancelCall
+	updateCalls                 []updateCall
+	cancelScheduledChangesCalls []string
+	cancelErr                   error
+	updateErr                   error
+	cancelScheduledChangesErr   error
+	fetchResult                 map[string]interface{}
+	fetchErr                    error
+	subCounter                  int
 }
 
 type updateCall struct {
@@ -81,6 +83,17 @@ func (f *fakeRazorpayGateway) CancelSubscription(subscriptionID string, data map
 		return nil, f.cancelErr
 	}
 
+	return map[string]interface{}{"id": subscriptionID}, nil
+}
+
+func (f *fakeRazorpayGateway) CancelScheduledChanges(subscriptionID string) (map[string]interface{}, error) {
+	f.cancelScheduledChangesCalls = append(f.cancelScheduledChangesCalls, subscriptionID)
+	if f.cancelScheduledChangesErr != nil {
+		return nil, f.cancelScheduledChangesErr
+	}
+	if f.fetchResult != nil {
+		f.fetchResult["cancel_at_cycle_end"] = false
+	}
 	return map[string]interface{}{"id": subscriptionID}, nil
 }
 
@@ -339,14 +352,8 @@ func TestCancelSubscriptionSchedulesRazorpayCycleEndCancellation(t *testing.T) {
 		t.Fatalf("cancel subscription returned error: %v", err)
 	}
 
-	if len(gateway.cancelCalls) != 1 {
-		t.Fatalf("expected 1 Razorpay cancel call, got %d", len(gateway.cancelCalls))
-	}
-	if gateway.cancelCalls[0].subscriptionID != "sub_123" {
-		t.Fatalf("expected subscription ID sub_123, got %s", gateway.cancelCalls[0].subscriptionID)
-	}
-	if got := gateway.cancelCalls[0].data["cancel_at_cycle_end"]; got != true {
-		t.Fatalf("expected cancel_at_cycle_end=true, got %#v", got)
+	if len(gateway.cancelCalls) != 0 {
+		t.Fatalf("expected no immediate Razorpay cancel call for active subscriptions, got %d", len(gateway.cancelCalls))
 	}
 
 	updated := repo.subs["sub_123"]

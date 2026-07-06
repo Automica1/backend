@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -278,12 +279,35 @@ func TestCaseE1_ResumeAfterCancelScheduled(t *testing.T) {
 	if err := svc.ResumeSubscription(context.Background(), "user@example.com"); err != nil {
 		t.Fatalf("ResumeSubscription: %v", err)
 	}
-	if len(gateway.updateCalls) != 1 || gateway.updateCalls[0].data["cancel_at_cycle_end"] != false {
-		t.Fatalf("expected razorpay resume call, got %#v", gateway.updateCalls)
+	if len(gateway.cancelScheduledChangesCalls) != 0 {
+		t.Fatalf("expected no razorpay call for local-only cancellation, got %#v", gateway.cancelScheduledChangesCalls)
 	}
 	updated := repo.subs["sub_pro"]
 	if updated.CancelAtCycleEnd || updated.CancelScheduledAt != nil {
 		t.Fatalf("expected cancellation flags cleared")
+	}
+}
+
+func TestCaseE1_ResumeLegacyRazorpayScheduledCancellation(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelAtCycleEnd = true
+	sub.CancelScheduledAt = &now
+	repo := newFakeSubscriptionRepo(sub)
+	gateway := &fakeRazorpayGateway{
+		fetchResult: map[string]interface{}{
+			"id":                  "sub_pro",
+			"status":              "active",
+			"cancel_at_cycle_end": true,
+		},
+	}
+	svc := newTestSubscriptionService(repo, gateway, &fakeEmailService{})
+
+	if err := svc.ResumeSubscription(context.Background(), "user@example.com"); err != nil {
+		t.Fatalf("ResumeSubscription: %v", err)
+	}
+	if len(gateway.cancelScheduledChangesCalls) != 1 {
+		t.Fatalf("expected razorpay cancel_scheduled_changes call, got %#v", gateway.cancelScheduledChangesCalls)
 	}
 }
 
@@ -299,6 +323,42 @@ func TestCaseE3_ResumeIdempotent(t *testing.T) {
 	}
 	if len(gateway.updateCalls) != 0 {
 		t.Fatalf("expected no razorpay call when not scheduled")
+	}
+}
+
+// Case E5 — resume clears orphaned cancelScheduledAt when cancel flag is false
+func TestCaseE5_ResumeClearsStaleCancelScheduledAt(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelScheduledAt = &now
+	repo := newFakeSubscriptionRepo(sub)
+	svc := newTestSubscriptionService(repo, &fakeRazorpayGateway{}, &fakeEmailService{})
+
+	if err := svc.ResumeSubscription(context.Background(), "user@example.com"); err != nil {
+		t.Fatalf("ResumeSubscription: %v", err)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.CancelScheduledAt != nil {
+		t.Fatalf("expected stale cancelScheduledAt cleared")
+	}
+}
+
+// Case E6 — resume succeeds even when razorpay fetch fails for local-only cancel
+func TestCaseE6_ResumeSucceedsWhenRazorpayFetchFails(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelAtCycleEnd = true
+	sub.CancelScheduledAt = &now
+	repo := newFakeSubscriptionRepo(sub)
+	gateway := &fakeRazorpayGateway{fetchErr: fmt.Errorf("network error")}
+	svc := newTestSubscriptionService(repo, gateway, &fakeEmailService{})
+
+	if err := svc.ResumeSubscription(context.Background(), "user@example.com"); err != nil {
+		t.Fatalf("ResumeSubscription: %v", err)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.CancelAtCycleEnd || updated.CancelScheduledAt != nil {
+		t.Fatalf("expected local cancel cleared despite razorpay fetch failure")
 	}
 }
 
@@ -362,6 +422,66 @@ func TestCaseF8_CancelClearsPendingDowngrade(t *testing.T) {
 	}
 }
 
+// Case F8b — idempotent cancel still clears stale pending downgrade
+func TestCaseF8b_CancelIdempotentClearsPendingDowngrade(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelAtCycleEnd = true
+	sub.CancelScheduledAt = &now
+	sub.PendingPlanID = "starter"
+	sub.PlanChangeDate = &sub.CurrentPeriodEnd
+	repo := newFakeSubscriptionRepo(sub)
+	svc := newTestSubscriptionService(repo, &fakeRazorpayGateway{}, &fakeEmailService{})
+
+	if err := svc.CancelSubscription(context.Background(), "user@example.com"); err != nil {
+		t.Fatalf("CancelSubscription: %v", err)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.PendingPlanID != "" {
+		t.Fatalf("expected pending downgrade cleared on idempotent cancel")
+	}
+}
+
+func TestGetSubscriptionStatusNormalizesConflictingState(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelAtCycleEnd = true
+	sub.CancelScheduledAt = &now
+	sub.PendingPlanID = "starter"
+	sub.PlanChangeDate = &sub.CurrentPeriodEnd
+	repo := newFakeSubscriptionRepo(sub)
+	svc := newTestSubscriptionService(repo, &fakeRazorpayGateway{}, &fakeEmailService{})
+
+	status, err := svc.GetSubscriptionStatus(context.Background(), "user@example.com")
+	if err != nil {
+		t.Fatalf("GetSubscriptionStatus: %v", err)
+	}
+	if status.PendingPlanID != "" {
+		t.Fatalf("expected pending cleared when cancel scheduled, got %s", status.PendingPlanID)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.PendingPlanID != "" {
+		t.Fatalf("expected normalization persisted")
+	}
+}
+
+func TestClearPendingPlanChange(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.PendingPlanID = "starter"
+	sub.PlanChangeDate = &sub.CurrentPeriodEnd
+	repo := newFakeSubscriptionRepo(sub)
+	svc := newTestSubscriptionService(repo, &fakeRazorpayGateway{}, &fakeEmailService{})
+
+	if err := svc.ClearPendingPlanChange(context.Background(), "user@example.com"); err != nil {
+		t.Fatalf("ClearPendingPlanChange: %v", err)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.PendingPlanID != "" || updated.PlanChangeDate != nil {
+		t.Fatalf("expected pending plan change cleared")
+	}
+}
+
 // Case F5 — upgrade allowed when cancel scheduled; clears cancel on verify
 func TestCaseF5_UpgradeClearsScheduledCancellation(t *testing.T) {
 	now := time.Now().UTC()
@@ -390,18 +510,47 @@ func TestCaseF5_UpgradeClearsScheduledCancellation(t *testing.T) {
 	}
 }
 
-// Case F6 — downgrade blocked when cancel scheduled
-func TestCaseF6_DowngradeBlockedWhenCancelScheduled(t *testing.T) {
+// Case F6 — downgrade clears pending cancellation then schedules downgrade
+func TestCaseF6_DowngradeClearsPendingCancellation(t *testing.T) {
 	now := time.Now().UTC()
 	sub := activeProSub(now)
 	sub.CancelAtCycleEnd = true
 	sub.CancelScheduledAt = &now
 	repo := newFakeSubscriptionRepo(sub)
-	svc := newTestSubscriptionService(repo, &fakeRazorpayGateway{}, &fakeEmailService{})
+	gateway := &fakeRazorpayGateway{}
+	svc := newTestSubscriptionService(repo, gateway, &fakeEmailService{})
 
-	err := svc.DowngradeSubscription(context.Background(), "user@example.com", "starter")
-	if err == nil || !strings.Contains(err.Error(), "cancellation is pending") {
-		t.Fatalf("expected downgrade blocked, got %v", err)
+	if err := svc.DowngradeSubscription(context.Background(), "user@example.com", "starter"); err != nil {
+		t.Fatalf("expected downgrade to clear cancellation and schedule, got %v", err)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.CancelAtCycleEnd || updated.PendingPlanID != "starter" {
+		t.Fatalf("expected cancellation cleared and starter pending, got cancel=%v pending=%s", updated.CancelAtCycleEnd, updated.PendingPlanID)
+	}
+}
+
+func TestCaseF6_DowngradeClearsLocalCancelWhenLegacyResumeFails(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelAtCycleEnd = true
+	sub.CancelScheduledAt = &now
+	repo := newFakeSubscriptionRepo(sub)
+	gateway := &fakeRazorpayGateway{
+		fetchResult: map[string]interface{}{
+			"id":                  "sub_pro",
+			"status":              "active",
+			"cancel_at_cycle_end": true,
+		},
+		cancelScheduledChangesErr: fmt.Errorf("no scheduled update on the subscription to cancel"),
+	}
+	svc := newTestSubscriptionService(repo, gateway, &fakeEmailService{})
+
+	if err := svc.DowngradeSubscription(context.Background(), "user@example.com", "starter"); err != nil {
+		t.Fatalf("expected downgrade to succeed with local cancel cleared, got %v", err)
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.CancelAtCycleEnd || updated.PendingPlanID != "starter" {
+		t.Fatalf("expected local cancel cleared and starter pending, got cancel=%v pending=%s", updated.CancelAtCycleEnd, updated.PendingPlanID)
 	}
 }
 
@@ -469,6 +618,43 @@ func TestCaseG1_J3_ChargedWebhookGrantsPlanCredits(t *testing.T) {
 	}
 	if credits.added != 9000 {
 		t.Fatalf("expected 9000 renewal credits, got %d", credits.added)
+	}
+}
+
+func TestScheduledCancellationFinalizedOnChargedWebhook(t *testing.T) {
+	now := time.Now().UTC()
+	sub := activeProSub(now)
+	sub.CancelAtCycleEnd = true
+	sub.CancelScheduledAt = &now
+	repo := newFakeSubscriptionRepo(sub)
+	gateway := &fakeRazorpayGateway{}
+	credits := &trackingCreditsService{}
+	svc := svcWithCredits(repo, gateway, credits)
+
+	payload := &models.WebhookPayload{
+		Event: "subscription.charged",
+		Payload: map[string]interface{}{
+			"subscription": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":            "sub_pro",
+					"current_start": float64(now.Unix()),
+					"current_end":   float64(now.AddDate(0, 1, 0).Unix()),
+				},
+			},
+			"payment": map[string]interface{}{
+				"entity": map[string]interface{}{"id": "pay_finalize_1"},
+			},
+		},
+	}
+	if err := svc.HandleWebhook(context.Background(), payload, ""); err != nil {
+		t.Fatalf("webhook: %v", err)
+	}
+	if len(gateway.cancelCalls) != 1 {
+		t.Fatalf("expected razorpay cancel after final cycle charge, got %d calls", len(gateway.cancelCalls))
+	}
+	updated := repo.subs["sub_pro"]
+	if updated.Status != models.SubscriptionStatusCancelled || updated.CancelAtCycleEnd {
+		t.Fatalf("expected cancelled subscription after final charge, got status=%s cancelAtCycleEnd=%v", updated.Status, updated.CancelAtCycleEnd)
 	}
 }
 

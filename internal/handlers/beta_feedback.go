@@ -120,6 +120,9 @@ func (h *BetaFeedbackHandler) ListSessionsAdmin(w http.ResponseWriter, r *http.R
 			limit = parsed
 		}
 	}
+	if limit > 200 {
+		limit = 200
+	}
 
 	sessions, err := h.betaFeedbackService.ListSessions(r.Context(), serviceName, limit)
 	if err != nil {
@@ -145,5 +148,87 @@ func (h *BetaFeedbackHandler) GetSessionAdmin(w http.ResponseWriter, r *http.Req
 	utils.SendJSONResponse(w, http.StatusOK, models.BetaFeedbackSessionDetailResponse{
 		Message: "Beta feedback session retrieved successfully",
 		Session: *session,
+	})
+}
+
+func (h *BetaFeedbackHandler) GetUserRefundBudgetAdmin(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userId")
+	budget, err := h.betaFeedbackService.GetUserRefundBudget(r.Context(), userID)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, models.BetaFeedbackRefundBudgetResponse{
+		Message: "Beta feedback refund budget retrieved successfully",
+		Budget:  *budget,
+	})
+}
+
+func (h *BetaFeedbackHandler) SetUserRefundCapOverrideAdmin(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userId")
+	var req models.SetBetaFeedbackRefundCapOverrideRequest
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	budget, err := h.betaFeedbackService.SetUserRefundCapOverride(r.Context(), userID, req.Cap)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	if h.adminService != nil {
+		actorEmail, _ := middleware.GetEmailFromContext(r.Context())
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "set_beta_feedback_refund_cap",
+			TargetType: "user",
+			TargetID:   userID,
+			Outcome:    "success",
+			Metadata: map[string]interface{}{
+				"capOverride": req.Cap,
+			},
+		})
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, models.BetaFeedbackRefundBudgetResponse{
+		Message: "Beta feedback refund cap override updated successfully",
+		Budget:  *budget,
+	})
+}
+
+func (h *BetaFeedbackHandler) ResetUserRefundBudgetAdmin(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userId")
+	var req models.ResetBetaFeedbackRefundBudgetRequest
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	budget, err := h.betaFeedbackService.ResetUserRefundBudget(r.Context(), userID, req.Confirm)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	if h.adminService != nil {
+		actorEmail, _ := middleware.GetEmailFromContext(r.Context())
+		_ = h.adminService.RecordAction(r.Context(), &models.AdminAuditLog{
+			ActorEmail: actorEmail,
+			Action:     "reset_beta_feedback_refund_budget",
+			TargetType: "user",
+			TargetID:   userID,
+			Outcome:    "success",
+			Metadata: map[string]interface{}{
+				"budgetResetAt": budget.BudgetResetAt,
+			},
+		})
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, models.BetaFeedbackRefundBudgetResponse{
+		Message: "Beta feedback refund budget reset successfully",
+		Budget:  *budget,
 	})
 }

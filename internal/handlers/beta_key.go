@@ -52,6 +52,7 @@ func (h *BetaKeyHandler) GenerateBetaKey(w http.ResponseWriter, r *http.Request)
 			Outcome:    "success",
 			Metadata: map[string]interface{}{
 				"serviceName":       req.ServiceName,
+				"betaServiceTag":    req.BetaServiceTag,
 				"label":             req.Label,
 				"assignedUserEmail": req.AssignedUserEmail,
 			},
@@ -100,6 +101,32 @@ func (h *BetaKeyHandler) RevokeBetaKey(w http.ResponseWriter, r *http.Request) {
 			TargetID:   keyID,
 			Outcome:    "success",
 		})
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, response)
+}
+
+func (h *BetaKeyHandler) ResolveBetaKey(w http.ResponseWriter, r *http.Request) {
+	email, ok := middleware.GetEmailFromContext(r.Context())
+	if !ok {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrUnauthorized, http.StatusUnauthorized, "email not found in context"))
+		return
+	}
+
+	var req models.ResolveBetaKeyRequest
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, 400, err.Error()))
+		return
+	}
+
+	response, err := h.betaKeyService.ResolveKey(r.Context(), req.ServiceName, req.BetaKey, email)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, response)

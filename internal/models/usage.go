@@ -22,8 +22,9 @@ type ServiceUsage struct {
 	IPAddress   string             `bson:"ip_address,omitempty" json:"ip_address,omitempty"`
 	UserAgent   string             `bson:"user_agent,omitempty" json:"user_agent,omitempty"`
 	AuthMethod  string             `bson:"auth_method" json:"auth_method"` // "bearer" or "api_key"
-	ProcessTime int64              `bson:"process_time_ms" json:"process_time_ms"` // Processing time in milliseconds
-	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
+	ProcessTime    int64              `bson:"process_time_ms" json:"process_time_ms"` // Processing time in milliseconds
+	BetaServiceTag string             `bson:"beta_service_tag,omitempty" json:"beta_service_tag,omitempty"`
+	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
 }
 
 // UsageStats represents aggregated usage statistics
@@ -70,6 +71,7 @@ type UsageTrackingRequest struct {
 	RequestID   string
 	IPAddress   string
 	UserAgent   string
-	AuthMethod  string
-	ProcessTime int64
+	AuthMethod     string
+	ProcessTime    int64
+	BetaServiceTag string
 }

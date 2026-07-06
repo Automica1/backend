@@ -3,8 +3,9 @@ package utils
 
 import (
 	"encoding/json"
-	"net/http"
 	"log"
+	"net/http"
+	"strings"
 
 	"chi-mongo-backend/internal/models"
 	apperrors "chi-mongo-backend/pkg/errors"
@@ -67,7 +68,7 @@ func SendErrorResponse(w http.ResponseWriter, err error) {
 		response := EnhancedErrorResponse{
 			Error:                 appErr.Message,
 			UserMessage:           appErr.UserMessage,
-			TechnicalMessage:      appErr.TechnicalMessage,
+			TechnicalMessage:      firstNonEmpty(appErr.TechnicalMessage, appErr.Details),
 			Suggestion:            appErr.Suggestion,
 			ErrorCode:             appErr.ErrorCode,
 			OriginalResponse:      cleanedOriginalResponse,
@@ -88,6 +89,15 @@ func SendErrorResponse(w http.ResponseWriter, err error) {
 		Error: err.Error(),
 	}
 	SendJSONResponse(w, statusCode, response)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // cleanOriginalResponse cleans up the original response to ensure JSON serialization

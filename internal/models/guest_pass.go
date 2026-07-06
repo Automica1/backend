@@ -14,6 +14,7 @@ var GuestPassServiceSlugs = []string{
 	"qr-extract",
 	"qr-mask",
 	"id-crop",
+	"document-enhance",
 	"face-verify",
 	"face-cropping",
 }

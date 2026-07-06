@@ -46,6 +46,7 @@ func main() {
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	tokenRepo := repository.NewTokenRepository(db.GetCollection("tokens"))
 	betaKeyRepo := repository.NewBetaKeyRepository(db.GetCollection("beta_keys"))
+	betaServiceRepo := repository.NewBetaServiceRepository(db.GetCollection("beta_services"))
 	guestPassRepo := repository.NewGuestPassRepository(db.GetCollection("guest_passes"))
 	betaFeedbackRepo := repository.NewBetaFeedbackRepository(db.GetCollection("beta_feedback_sessions"))
 	apiKeyRepo := repository.NewAPIKeyRepository(db.GetCollection("api_keys"))
@@ -55,6 +56,8 @@ func main() {
 	subRepo := repository.NewSubscriptionRepository(db.GetCollection("subscriptions")) // Add subscription repository
 	paymentEventRepo := repository.NewPaymentEventRepository(db.GetCollection("payment_events"))
 	planRepo := repository.NewPlanRepository(db.GetCollection("plans"))                // Add plan repository
+	jobRepo := repository.NewJobRepository(db.GetCollection("jobs"))
+	gpuPoolRepo := repository.NewGPUPoolRepository(db.GetCollection("gpu_pools"))
 	runtimeLogRepo := repository.NewRuntimeLogRepository(
 		cfg.Logs.AccessPath,
 		cfg.Logs.ErrorPath,
@@ -66,20 +69,24 @@ func main() {
 	userService := services.NewUserService(userRepo, creditsRepo, activityRepo)
 	creditsService := services.NewCreditsService(creditsRepo, userRepo)
 	tokenService := services.NewCreditTokenService(tokenRepo, creditsRepo)
-	betaKeyService := services.NewBetaKeyService(betaKeyRepo, userService)
+	betaServiceService := services.NewBetaServiceService(betaServiceRepo)
+	betaKeyService := services.NewBetaKeyService(betaKeyRepo, betaServiceService, userService)
 	guestPassService := services.NewGuestPassService(guestPassRepo, creditsRepo)
-	betaFeedbackService := services.NewBetaFeedbackService(betaFeedbackRepo, creditsService)
+	betaFeedbackService := services.NewBetaFeedbackService(betaFeedbackRepo, userRepo, creditsService)
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, userRepo)
 	usageService := services.NewUsageService(usageRepo) // Add usage service
-	planService := services.NewPlanService(planRepo)    // Add plan service
+	planService := services.NewPlanService(planRepo, services.NewRazorpayPlanProvisioner(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret))
 	emailService := services.NewEmailService(cfg.Email.FromEmail, cfg.Email.FromName, cfg.Email.Password)
 	subService := services.NewSubscriptionService(subRepo, paymentEventRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
 	adminService := services.NewAdminService(auditRepo, runtimeLogRepo, userService, tokenService, planService, usageService, subService)
+	jobService := services.NewJobService(jobRepo)
+	gpuPoolService := services.NewGPUPoolService(gpuPoolRepo, jobService, creditsService, cfg)
 
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
 	qrExtractionAPIService := services.NewQRExtractionAPIService()
 	idCroppingAPIService := services.NewIDCroppingAPIService()
+	documentEnhancementAPIService := services.NewDocumentEnhancementAPIService()
 	signatureAPIService := services.NewSignatureVerificationAPIService()
 	faceDetectionAPIService := services.NewFaceDetectionAPIService()
 	faceVerificationAPIService := services.NewFaceVerificationAPIService()
@@ -116,15 +123,17 @@ func main() {
 		Credits: handlers.NewCreditsHandler(creditsService, userService, adminService),
 		Token:   handlers.NewTokenHandler(tokenService, creditsService, userService, adminService),
 		APIKey:  handlers.NewAPIKeyHandler(apiKeyService, userService),
-		BetaKey: handlers.NewBetaKeyHandler(betaKeyService, adminService),
+		BetaKey:     handlers.NewBetaKeyHandler(betaKeyService, adminService),
+		BetaService: handlers.NewBetaServiceHandler(betaServiceService, adminService),
 		BetaFeedback: handlers.NewBetaFeedbackHandler(betaFeedbackService, userService, adminService),
 		GuestPass:    handlers.NewGuestPassHandler(guestPassService, adminService),
 		// These handlers don't have usage tracking yet - using original constructors
 		QRMasking:    handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
 		QRExtraction: handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
 		IDCropping:   handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
+		DocumentEnhancement: handlers.NewDocumentEnhancementHandler(creditsService, userService, documentEnhancementAPIService, usageService),
 		// SignatureVerification has usage tracking implemented
-		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, betaKeyService, betaFeedbackService, usageService),
+		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, betaKeyService, betaServiceService, betaFeedbackService, usageService),
 		// These handlers don't have usage tracking yet - using original constructors
 		FaceDetect:   handlers.NewFaceDetectionHandler(creditsService, userService, faceDetectionAPIService, usageService),
 		FaceVerify:   handlers.NewFaceVerificationHandler(creditsService, userService, faceVerificationAPIService, usageService),
@@ -132,6 +141,7 @@ func main() {
 		Usage:        handlers.NewUsageHandler(usageService),                    // Usage handler for admin endpoints
 		Subscription: handlers.NewSubscriptionHandler(subService, adminService), // Add subscription handler
 		Plan:         handlers.NewPlanHandler(planService, adminService),        // Add plan handler
+		GPUPool:      handlers.NewGPUPoolHandler(gpuPoolService, userService),
 	}
 
 	// Verify handlers are initialized

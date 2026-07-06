@@ -19,19 +19,22 @@ import (
 type BetaKeyService interface {
 	GenerateKey(ctx context.Context, req *models.GenerateBetaKeyRequest, createdBy string) (*models.GenerateBetaKeyResponse, error)
 	ValidateKey(ctx context.Context, serviceName, plaintextKey, userEmail string) (*models.BetaKey, error)
+	ResolveKey(ctx context.Context, serviceName, plaintextKey, userEmail string) (*models.ResolveBetaKeyResponse, error)
 	ListKeys(ctx context.Context, serviceName string) ([]*models.BetaKey, error)
 	RevokeKey(ctx context.Context, keyID string) (*models.RevokeBetaKeyResponse, error)
 }
 
 type betaKeyService struct {
-	betaKeyRepo repository.BetaKeyRepository
-	userService UserService
+	betaKeyRepo        repository.BetaKeyRepository
+	betaServiceService BetaServiceService
+	userService        UserService
 }
 
-func NewBetaKeyService(betaKeyRepo repository.BetaKeyRepository, userService UserService) BetaKeyService {
+func NewBetaKeyService(betaKeyRepo repository.BetaKeyRepository, betaServiceService BetaServiceService, userService UserService) BetaKeyService {
 	return &betaKeyService{
-		betaKeyRepo: betaKeyRepo,
-		userService: userService,
+		betaKeyRepo:        betaKeyRepo,
+		betaServiceService: betaServiceService,
+		userService:        userService,
 	}
 }
 
@@ -45,6 +48,14 @@ func (s *betaKeyService) GenerateKey(ctx context.Context, req *models.GenerateBe
 			return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "assigned user not found")
 		}
 		return nil, err
+	}
+
+	betaService, err := s.betaServiceService.GetActiveByTag(ctx, req.BetaServiceTag)
+	if err != nil {
+		return nil, err
+	}
+	if betaService.ServiceName != req.ServiceName {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "beta service tag does not match serviceName")
 	}
 
 	plaintext, keyHash, keyPrefix, err := s.generateBetaKey()
@@ -63,6 +74,7 @@ func (s *betaKeyService) GenerateKey(ctx context.Context, req *models.GenerateBe
 		KeyHash:           keyHash,
 		KeyPrefix:         keyPrefix,
 		ServiceName:       req.ServiceName,
+		BetaServiceTag:    req.BetaServiceTag,
 		Label:             req.Label,
 		AssignedUserEmail: req.AssignedUserEmail,
 		CreatedBy:         createdBy,
@@ -81,6 +93,7 @@ func (s *betaKeyService) GenerateKey(ctx context.Context, req *models.GenerateBe
 		BetaKey:           plaintext,
 		KeyPrefix:         keyPrefix,
 		ServiceName:       req.ServiceName,
+		BetaServiceTag:    req.BetaServiceTag,
 		Label:             req.Label,
 		AssignedUserEmail: req.AssignedUserEmail,
 		ExpiresAt:           expiresAt,
@@ -126,6 +139,29 @@ func (s *betaKeyService) ValidateKey(ctx context.Context, serviceName, plaintext
 	}()
 
 	return record, nil
+}
+
+func (s *betaKeyService) ResolveKey(ctx context.Context, serviceName, plaintextKey, userEmail string) (*models.ResolveBetaKeyResponse, error) {
+	record, err := s.ValidateKey(ctx, serviceName, plaintextKey, userEmail)
+	if err != nil {
+		return &models.ResolveBetaKeyResponse{Valid: false}, nil
+	}
+
+	tag := strings.TrimSpace(record.BetaServiceTag)
+	label := strings.TrimSpace(record.Label)
+	if betaService, svcErr := s.betaServiceService.GetActiveByTag(ctx, tag); svcErr == nil && betaService != nil {
+		if label == "" {
+			label = betaService.Label
+		}
+	}
+
+	return &models.ResolveBetaKeyResponse{
+		Valid:           true,
+		BetaServiceTag:  tag,
+		Label:           label,
+		RequiresGpuPool: models.BetaServiceTagRequiresGPUPool(tag),
+		KeyPrefix:       record.KeyPrefix,
+	}, nil
 }
 
 func (s *betaKeyService) ListKeys(ctx context.Context, serviceName string) ([]*models.BetaKey, error) {

@@ -15,6 +15,7 @@ import (
 )
 
 const defaultMonthlyRefundCap = 50
+const betaFeedbackRollingWindowDays = 30
 
 type BetaFeedbackService interface {
 	CreateSession(ctx context.Context, req *models.CreateBetaFeedbackSessionRequest) (*models.BetaFeedbackSession, error)
@@ -23,16 +24,25 @@ type BetaFeedbackService interface {
 	SubmitFeedback(ctx context.Context, userID, email, sessionID string, expected *models.BetaFeedbackExpectedResult) (*models.SubmitBetaFeedbackResponse, error)
 	ListSessions(ctx context.Context, serviceName string, limit int) ([]models.BetaFeedbackSession, error)
 	GetSessionByID(ctx context.Context, sessionID string) (*models.BetaFeedbackSessionAdminDetail, error)
+	GetUserRefundBudget(ctx context.Context, userID string) (*models.BetaFeedbackRefundBudget, error)
+	SetUserRefundCapOverride(ctx context.Context, userID string, cap *int) (*models.BetaFeedbackRefundBudget, error)
+	ResetUserRefundBudget(ctx context.Context, userID, confirm string) (*models.BetaFeedbackRefundBudget, error)
 }
 
 type betaFeedbackService struct {
 	repo           repository.BetaFeedbackRepository
+	userRepo       repository.UserRepository
 	creditsService CreditsService
 }
 
-func NewBetaFeedbackService(repo repository.BetaFeedbackRepository, creditsService CreditsService) BetaFeedbackService {
+func NewBetaFeedbackService(
+	repo repository.BetaFeedbackRepository,
+	userRepo repository.UserRepository,
+	creditsService CreditsService,
+) BetaFeedbackService {
 	return &betaFeedbackService{
 		repo:           repo,
+		userRepo:       userRepo,
 		creditsService: creditsService,
 	}
 }
@@ -42,12 +52,17 @@ func (s *betaFeedbackService) CreateSession(ctx context.Context, req *models.Cre
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "invalid beta feedback session request")
 	}
 
+	if err := s.repo.SupersedePendingByUserAndService(ctx, req.UserID, req.ServiceName); err != nil {
+		return nil, apperrors.NewAppError(apperrors.ErrInternalServer, 500, "failed to supersede prior beta feedback sessions")
+	}
+
 	now := time.Now()
 	session := &models.BetaFeedbackSession{
 		UserID:         req.UserID,
 		Email:          strings.ToLower(strings.TrimSpace(req.Email)),
 		ServiceName:    req.ServiceName,
 		BetaKeyPrefix:  req.BetaKeyPrefix,
+		BetaServiceTag: req.BetaServiceTag,
 		ReqID:          req.ReqID,
 		Inputs:         req.Inputs,
 		ActualResult:   req.ActualResult,
@@ -187,14 +202,48 @@ func (s *betaFeedbackService) ListSessions(ctx context.Context, serviceName stri
 	return result, nil
 }
 
+func (s *betaFeedbackService) GetUserRefundBudget(ctx context.Context, userID string) (*models.BetaFeedbackRefundBudget, error) {
+	user, err := s.userRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildRefundBudget(ctx, user)
+}
+
+func (s *betaFeedbackService) SetUserRefundCapOverride(ctx context.Context, userID string, cap *int) (*models.BetaFeedbackRefundBudget, error) {
+	if cap != nil && *cap <= 0 {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "cap must be a positive integer")
+	}
+	if err := s.userRepo.UpdateBetaFeedbackRefundCapOverride(ctx, userID, cap); err != nil {
+		return nil, err
+	}
+	return s.GetUserRefundBudget(ctx, userID)
+}
+
+func (s *betaFeedbackService) ResetUserRefundBudget(ctx context.Context, userID, confirm string) (*models.BetaFeedbackRefundBudget, error) {
+	if strings.TrimSpace(confirm) != "RESET" {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, `confirmation must be "RESET"`)
+	}
+	if err := s.userRepo.SetBetaFeedbackRefundBudgetResetAt(ctx, userID, time.Now()); err != nil {
+		return nil, err
+	}
+	return s.GetUserRefundBudget(ctx, userID)
+}
+
 func (s *betaFeedbackService) refundableAmount(ctx context.Context, userID string, requested int) (int, error) {
-	cap := monthlyRefundCap()
-	since := time.Now().AddDate(0, -1, 0)
-	total, err := s.repo.SumRefundedCreditsSince(ctx, userID, since)
+	user, err := s.userRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
-	remaining := cap - total
+
+	cap := effectiveRefundCap(user)
+	since := refundWindowStart(user)
+	usage, err := s.repo.GetRefundUsageSince(ctx, userID, since)
+	if err != nil {
+		return 0, err
+	}
+
+	remaining := cap - usage.TotalCredits
 	if remaining <= 0 {
 		return 0, nil
 	}
@@ -202,6 +251,62 @@ func (s *betaFeedbackService) refundableAmount(ctx context.Context, userID strin
 		return requested, nil
 	}
 	return remaining, nil
+}
+
+func (s *betaFeedbackService) buildRefundBudget(ctx context.Context, user *models.User) (*models.BetaFeedbackRefundBudget, error) {
+	globalCap := monthlyRefundCap()
+	effectiveCap := effectiveRefundCap(user)
+	since := refundWindowStart(user)
+
+	usage, err := s.repo.GetRefundUsageSince(ctx, user.UserID, since)
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := effectiveCap - usage.TotalCredits
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	var capOverride *int
+	if user.BetaFeedbackMonthlyRefundCapOverride != nil {
+		value := *user.BetaFeedbackMonthlyRefundCapOverride
+		capOverride = &value
+	}
+
+	return &models.BetaFeedbackRefundBudget{
+		UserID:              user.UserID,
+		Email:               user.Email,
+		GlobalCap:           globalCap,
+		CapOverride:         capOverride,
+		EffectiveCap:        effectiveCap,
+		RollingWindowDays:   betaFeedbackRollingWindowDays,
+		WindowStart:         since,
+		CreditsUsed:         usage.TotalCredits,
+		CreditsRemaining:    remaining,
+		CapExhausted:        remaining <= 0,
+		RefundSessionsCount: usage.SessionCount,
+		BudgetResetAt:       user.BetaFeedbackRefundBudgetResetAt,
+	}, nil
+}
+
+func effectiveRefundCap(user *models.User) int {
+	if user != nil && user.BetaFeedbackMonthlyRefundCapOverride != nil && *user.BetaFeedbackMonthlyRefundCapOverride > 0 {
+		return *user.BetaFeedbackMonthlyRefundCapOverride
+	}
+	return monthlyRefundCap()
+}
+
+func refundWindowStart(user *models.User) time.Time {
+	rollingStart := time.Now().AddDate(0, 0, -betaFeedbackRollingWindowDays)
+	if user == nil || user.BetaFeedbackRefundBudgetResetAt == nil {
+		return rollingStart
+	}
+	resetAt := user.BetaFeedbackRefundBudgetResetAt.UTC()
+	if resetAt.After(rollingStart) {
+		return resetAt
+	}
+	return rollingStart
 }
 
 func monthlyRefundCap() int {

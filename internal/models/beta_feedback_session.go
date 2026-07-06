@@ -11,6 +11,7 @@ import (
 const (
 	BetaFeedbackStatusPendingFeedback = "pending_feedback"
 	BetaFeedbackStatusRefunded        = "refunded"
+	BetaFeedbackStatusSuperseded      = "superseded"
 
 	BetaFeedbackRunOutcomeCompleted = "completed"
 	BetaFeedbackRunOutcomeFailed    = "failed"
@@ -34,7 +35,7 @@ type BetaFeedbackExpectedResult struct {
 	ExpectedSimilarityMin  *float64 `json:"expectedSimilarityMin,omitempty" bson:"expectedSimilarityMin,omitempty"`
 	ExpectedSimilarityMax  *float64 `json:"expectedSimilarityMax,omitempty" bson:"expectedSimilarityMax,omitempty"`
 	Notes                  string   `json:"notes,omitempty" bson:"notes,omitempty"`
-	ResponseAsExpected     bool     `json:"responseAsExpected,omitempty" bson:"responseAsExpected,omitempty"`
+	ResponseAsExpected     *bool    `json:"responseAsExpected" bson:"responseAsExpected"`
 }
 
 func normalizeExpectedClassification(raw string) string {
@@ -53,7 +54,7 @@ func normalizeExpectedClassification(raw string) string {
 		return "Forged"
 	case "manual review":
 		return "Manual Review"
-	case "not-detected":
+	case "not-detected", "failed":
 		return "Not-Detected"
 	default:
 		return trimmed
@@ -84,7 +85,7 @@ func (e *BetaFeedbackExpectedResult) Validate() error {
 	if e.ExpectedSimilarityMin != nil && e.ExpectedSimilarityMax != nil && *e.ExpectedSimilarityMin > *e.ExpectedSimilarityMax {
 		return errors.New("expectedSimilarityMin cannot exceed expectedSimilarityMax")
 	}
-	if !e.ResponseAsExpected && e.ExpectedSimilarityMin == nil {
+	if e.ResponseAsExpected != nil && !*e.ResponseAsExpected && e.ExpectedSimilarityMin == nil {
 		return errors.New("expectedSimilarityMin is required when the response was not as expected")
 	}
 	return nil
@@ -101,6 +102,7 @@ type BetaFeedbackSession struct {
 	Email             string                      `bson:"email" json:"email"`
 	ServiceName       string                      `bson:"serviceName" json:"serviceName"`
 	BetaKeyPrefix     string                      `bson:"betaKeyPrefix,omitempty" json:"betaKeyPrefix,omitempty"`
+	BetaServiceTag    string                      `bson:"betaServiceTag,omitempty" json:"betaServiceTag,omitempty"`
 	ReqID             string                      `bson:"reqId" json:"reqId"`
 	Inputs            []string                    `bson:"inputs" json:"-"`
 	ActualResult      *BetaFeedbackActualResult     `bson:"actualResult,omitempty" json:"actualResult,omitempty"`
@@ -120,6 +122,7 @@ type CreateBetaFeedbackSessionRequest struct {
 	Email          string
 	ServiceName    string
 	BetaKeyPrefix  string
+	BetaServiceTag string
 	ReqID          string
 	Inputs         []string
 	ActualResult   *BetaFeedbackActualResult
@@ -185,6 +188,39 @@ type BetaFeedbackSessionListResponse struct {
 	Message string                `json:"message"`
 	Sessions []BetaFeedbackSession `json:"sessions"`
 	Total   int                   `json:"total"`
+}
+
+type BetaFeedbackRefundUsage struct {
+	TotalCredits int `json:"totalCredits"`
+	SessionCount int `json:"sessionCount"`
+}
+
+type BetaFeedbackRefundBudget struct {
+	UserID              string     `json:"userId"`
+	Email               string     `json:"email"`
+	GlobalCap           int        `json:"globalCap"`
+	CapOverride         *int       `json:"capOverride,omitempty"`
+	EffectiveCap        int        `json:"effectiveCap"`
+	RollingWindowDays   int        `json:"rollingWindowDays"`
+	WindowStart         time.Time  `json:"windowStart"`
+	CreditsUsed         int        `json:"creditsUsed"`
+	CreditsRemaining    int        `json:"creditsRemaining"`
+	CapExhausted        bool       `json:"capExhausted"`
+	RefundSessionsCount int        `json:"refundSessionsCount"`
+	BudgetResetAt       *time.Time `json:"budgetResetAt,omitempty"`
+}
+
+type BetaFeedbackRefundBudgetResponse struct {
+	Message string                   `json:"message"`
+	Budget  BetaFeedbackRefundBudget `json:"budget"`
+}
+
+type SetBetaFeedbackRefundCapOverrideRequest struct {
+	Cap *int `json:"cap"`
+}
+
+type ResetBetaFeedbackRefundBudgetRequest struct {
+	Confirm string `json:"confirm"`
 }
 
 func (s *BetaFeedbackSession) ToSummary() BetaFeedbackSessionSummary {

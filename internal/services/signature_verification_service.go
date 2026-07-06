@@ -17,7 +17,8 @@ import (
 )
 
 type SignatureVerificationProcessOptions struct {
-	UseBeta bool
+	UseBeta        bool
+	BetaServiceURL string
 }
 
 type SignatureVerificationAPIService interface {
@@ -25,19 +26,28 @@ type SignatureVerificationAPIService interface {
 }
 
 type signatureVerificationAPIService struct {
-	httpClient *http.Client
-	prodURL    string
-	betaURL    string
-	gatewayKey string
+	httpClient     *http.Client
+	betaHttpClient *http.Client
+	prodURL        string
+	gatewayKey     string
 }
 
 func NewSignatureVerificationAPIService() SignatureVerificationAPIService {
+	betaTimeout := 180 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("SIGNATURE_VERIFY_BETA_TIMEOUT_SECONDS")); raw != "" {
+		if secs, err := time.ParseDuration(raw + "s"); err == nil && secs > 0 {
+			betaTimeout = secs
+		}
+	}
+
 	return &signatureVerificationAPIService{
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		betaHttpClient: &http.Client{
+			Timeout: betaTimeout,
+		},
 		prodURL:    getEnvOrDefault("VERIFY_SIGNATURE_API_URL"),
-		betaURL:    os.Getenv("VERIFY_SIGNATURE_BETA_API_URL"),
 		gatewayKey: os.Getenv("BETA_ML_GATEWAY_KEY"),
 	}
 }
@@ -46,10 +56,14 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 	useBeta := opts != nil && opts.UseBeta
 	apiURL := s.prodURL
 	if useBeta {
-		if s.betaURL == "" {
+		betaURL := ""
+		if opts != nil {
+			betaURL = strings.TrimSpace(opts.BetaServiceURL)
+		}
+		if betaURL == "" {
 			return nil, fmt.Errorf("beta signature verification is not configured")
 		}
-		apiURL = s.betaURL
+		apiURL = betaURL
 	}
 
 	payload := map[string]interface{}{
@@ -75,7 +89,12 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 	log.Printf("Making Signature Verification API request to: %s (beta=%t)", apiURL, useBeta)
 	log.Printf("Signature Verification request ReqID=%s payload_bytes=%d", req.ReqID, len(jsonData))
 
-	resp, err := s.httpClient.Do(httpReq)
+	client := s.httpClient
+	if useBeta {
+		client = s.betaHttpClient
+	}
+
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call signature verification API: %w", err)
 	}
@@ -90,7 +109,7 @@ func (s *signatureVerificationAPIService) ProcessSignatureVerification(ctx conte
 	log.Printf("Signature Verification API response bytes: %d", len(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("signature verification API returned non-OK status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("signature verification API returned non-OK status %d: %s", resp.StatusCode, truncateForLog(string(body), 500))
 	}
 
 	var apiResponse struct {
