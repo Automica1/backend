@@ -22,6 +22,7 @@ type GPUPoolService interface {
 	HandleMeterTick(ctx context.Context, serviceTag, userID string) error
 	HandleProvisionFailed(ctx context.Context, serviceTag string) error
 	OnProvisionSkippedNoSessions(ctx context.Context, serviceTag string) error
+	HandleProvisionNoSessions(ctx context.Context, serviceTag string, afterPipeline bool) (continueProvision bool, err error)
 }
 
 type gpuPoolService struct {
@@ -156,7 +157,14 @@ func (s *gpuPoolService) afterSessionStopped(ctx context.Context, serviceTag str
 	if err != nil {
 		return nil
 	}
-	return s.maybeScheduleUserGraceDestroy(ctx, pool, serviceName)
+	switch pool.State {
+	case models.GPUPoolStateReady:
+		return s.maybeScheduleUserGraceDestroy(ctx, pool, serviceName)
+	case models.GPUPoolStateProvisioning:
+		return s.afterEarlyStopDuringProvision(ctx, pool, serviceName)
+	default:
+		return nil
+	}
 }
 
 // reconcileIdleWarmPool schedules grace teardown for ready pools with no sessions but a live VM.
@@ -369,6 +377,9 @@ func (s *gpuPoolService) reconcileStuckProvision(ctx context.Context, pool *mode
 		if active {
 			return pool, nil
 		}
+		if s.poolInReconnectWindow(pool) {
+			return pool, nil
+		}
 		update := map[string]any{
 			"state": models.GPUPoolStateIdle,
 		}
@@ -409,26 +420,19 @@ func (s *gpuPoolService) HandleProvisionFailed(ctx context.Context, serviceTag s
 	return s.refundFailedPoolSessions(ctx, serviceTag)
 }
 
-// OnProvisionSkippedNoSessions keeps warm nodes in grace or holds provisioning during reconnect cooldown.
+// OnProvisionSkippedNoSessions handles worker entry when refCount=0 before bootstrap starts.
 func (s *gpuPoolService) OnProvisionSkippedNoSessions(ctx context.Context, serviceTag string) error {
 	pool, err := s.poolRepo.GetByServiceTag(ctx, serviceTag)
 	if err != nil || pool == nil || pool.RefCount > 0 {
 		return err
 	}
-	if pool.TeardownOnUserStop() {
-		if pool.State == models.GPUPoolStateDraining && pool.DrainReason == models.GPUPoolDrainReasonUserGrace {
-			return nil
-		}
-		serviceName, svcErr := s.resolveServiceName(serviceTag)
-		if svcErr != nil {
-			return nil
-		}
-		return s.maybeScheduleUserGraceDestroy(ctx, pool, serviceName)
+	if pool.State == models.GPUPoolStateDraining && pool.DrainReason == models.GPUPoolDrainReasonUserGrace {
+		return nil
 	}
 	if pool.State != models.GPUPoolStateProvisioning {
 		return nil
 	}
-	if time.Since(pool.UpdatedAt) < s.reconnectCooldown() {
+	if s.poolInReconnectWindow(pool) {
 		return nil
 	}
 	active, err := s.jobSvc.HasActiveByIdempotencyKey(ctx, s.provisionKey(serviceTag))
@@ -563,22 +567,24 @@ func (s *gpuPoolService) Start(ctx context.Context, userID, serviceTag string) (
 	}
 
 	graceKey := s.graceDestroyKey(serviceTag)
+	reconnectKey := s.reconnectDestroyKey(serviceTag)
 	if existing != nil && existing.State == models.GPUPoolStateDraining {
-		msg := "The test GPU is shutting down. Contact an admin to turn it back on."
+		msg := "The test resource is shutting down. Contact an admin to turn it back on."
 		if existing.DrainReason == models.GPUPoolDrainReasonAdminGrace {
-			msg = "This test GPU is shutting down. Contact support."
+			msg = "This test resource is shutting down. Contact support."
 		}
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 409, msg)
 	}
 	if existing != nil && existing.State == models.GPUPoolStateReady {
 		_, _ = s.jobSvc.CancelPendingByIdempotencyKey(ctx, graceKey)
 	}
+	_, _ = s.jobSvc.CancelPendingByIdempotencyKey(ctx, reconnectKey)
 
 	if destroying, err := s.jobSvc.HasRunningGPUPoolDestroy(ctx, serviceTag); err != nil {
 		return nil, err
 	} else if destroying {
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 409,
-			"GPU is shutting down. Wait a minute and try Start Testing again.")
+			"Resource is shutting down. Wait a minute and try Start Testing again.")
 	}
 
 	alreadyActive := existing != nil && activeSession(existing, userID) != nil
@@ -737,7 +743,7 @@ func (s *gpuPoolService) AdminShutdown(ctx context.Context, serviceTag string, i
 	if destroying, err := s.jobSvc.HasRunningGPUPoolDestroy(ctx, serviceTag); err != nil {
 		return nil, err
 	} else if destroying {
-		return nil, apperrors.NewAppError(apperrors.ErrValidation, 409, "GPU shutdown already in progress")
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 409, "Resource shutdown already in progress")
 	}
 
 	poolBefore, _ := s.poolRepo.GetByServiceTag(ctx, serviceTag)

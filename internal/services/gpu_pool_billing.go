@@ -263,7 +263,7 @@ func (s *gpuPoolService) checkStartCredits(ctx context.Context, userID, serviceT
 		return apperrors.NewAppError(
 			apperrors.ErrInsufficientCredits,
 			400,
-			fmt.Sprintf("Need at least %d credits to start GPU testing", min),
+			fmt.Sprintf("Need at least %d credits to start resource testing", min),
 			fmt.Sprintf("balance=%d min=%d", balance.Credits, min),
 		)
 	}

@@ -25,6 +25,8 @@ type JobRepository interface {
 	MarkDead(ctx context.Context, id primitive.ObjectID, errMsg string) error
 	ReleaseStaleLocks(ctx context.Context, workerID string, staleBefore time.Time) (int64, error)
 	CancelPendingByIdempotencyKey(ctx context.Context, key string) (int64, error)
+	CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error)
+	MarkCancelled(ctx context.Context, id primitive.ObjectID) error
 	HasActiveMeterTick(ctx context.Context, serviceTag, userID string) (bool, error)
 	CancelPendingMeterTicks(ctx context.Context, serviceTag, userID string) (int64, error)
 	GetByID(ctx context.Context, id primitive.ObjectID) (*models.Job, error)
@@ -262,6 +264,41 @@ func (r *jobRepository) CancelPendingByIdempotencyKey(ctx context.Context, key s
 		return 0, err
 	}
 	return result.ModifiedCount, nil
+}
+
+func (r *jobRepository) CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error) {
+	if key == "" {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	result, err := r.collection.UpdateMany(ctx, bson.M{
+		"idempotencyKey": key,
+		"status":         models.JobStatusRunning,
+	}, bson.M{
+		"$set": bson.M{
+			"status":      models.JobStatusCancelled,
+			"completedAt": now,
+			"lockedBy":    "",
+			"lockedAt":    nil,
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ModifiedCount, nil
+}
+
+func (r *jobRepository) MarkCancelled(ctx context.Context, id primitive.ObjectID) error {
+	now := time.Now().UTC()
+	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$set": bson.M{
+			"status":      models.JobStatusCancelled,
+			"completedAt": now,
+			"lockedBy":    "",
+			"lockedAt":    nil,
+		},
+	})
+	return err
 }
 
 func meterTickJobFilter(serviceTag, userID string) bson.M {

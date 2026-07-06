@@ -145,6 +145,14 @@ func (w *Worker) processOne(ctx context.Context) bool {
 		return true
 	}
 
+	if IsJobCancelled(err) {
+		if markErr := w.repo.MarkCancelled(ctx, job.ID); markErr != nil {
+			log.Printf("mark cancelled error: %v", markErr)
+		}
+		log.Printf("job cancelled id=%s type=%s", job.ID.Hex(), job.Type)
+		return true
+	}
+
 	log.Printf("job failed id=%s type=%s err=%v", job.ID.Hex(), job.Type, err)
 	retry := job.Attempts < job.MaxAttempts
 	backoff := time.Duration(job.Attempts*job.Attempts) * 30 * time.Second

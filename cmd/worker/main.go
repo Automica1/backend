@@ -43,7 +43,7 @@ func main() {
 
 	registry := worker.NewRegistry()
 	workerhandlers.RegisterSystemHandlers(registry)
-	gpuHandlers := workerhandlers.NewGPUPoolHandlers(cfg, poolRepo, gpuPoolSvc)
+	gpuHandlers := workerhandlers.NewGPUPoolHandlers(cfg, poolRepo, jobRepo, gpuPoolSvc)
 	gpuHandlers.Register(registry)
 
 	w := worker.New(cfg, jobRepo, registry)

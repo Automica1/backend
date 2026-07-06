@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"chi-mongo-backend/internal/config"
@@ -75,13 +77,14 @@ func (jl *jobLog) close() {
 }
 
 type GPUPoolHandlers struct {
-	cfg           *config.Config
-	poolRepo      repository.GPUPoolRepository
+	cfg            *config.Config
+	poolRepo       repository.GPUPoolRepository
+	jobRepo        repository.JobRepository
 	gpuPoolService services.GPUPoolService
 }
 
-func NewGPUPoolHandlers(cfg *config.Config, poolRepo repository.GPUPoolRepository, gpuPoolService services.GPUPoolService) *GPUPoolHandlers {
-	return &GPUPoolHandlers{cfg: cfg, poolRepo: poolRepo, gpuPoolService: gpuPoolService}
+func NewGPUPoolHandlers(cfg *config.Config, poolRepo repository.GPUPoolRepository, jobRepo repository.JobRepository, gpuPoolService services.GPUPoolService) *GPUPoolHandlers {
+	return &GPUPoolHandlers{cfg: cfg, poolRepo: poolRepo, jobRepo: jobRepo, gpuPoolService: gpuPoolService}
 }
 
 func (h *GPUPoolHandlers) Register(registry *worker.Registry) {
@@ -198,10 +201,61 @@ func (h *GPUPoolHandlers) runScript(ctx context.Context, jl *jobLog, job *models
 	return h.runScriptWithExtraEnv(ctx, jl, job, nil, script, args...)
 }
 
+func (h *GPUPoolHandlers) startCancelWatcher(ctx context.Context, job *models.Job, cmdPtr *atomic.Pointer[exec.Cmd]) (context.Context, context.CancelFunc) {
+	watchCtx, cancel := context.WithCancel(ctx)
+	if h.jobRepo == nil || job == nil {
+		return watchCtx, cancel
+	}
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-ticker.C:
+				j, err := h.jobRepo.GetByID(context.Background(), job.ID)
+				if err != nil || j == nil {
+					continue
+				}
+				if j.Status != models.JobStatusCancelled {
+					continue
+				}
+				if c := cmdPtr.Load(); c != nil && c.Process != nil {
+					_ = c.Process.Kill()
+				}
+				cancel()
+				return
+			}
+		}
+	}()
+	return watchCtx, cancel
+}
+
+func (h *GPUPoolHandlers) finishCmdRun(ctx context.Context, watchCtx context.Context, job *models.Job, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(watchCtx.Err(), context.Canceled) {
+		if h.jobRepo != nil && job != nil {
+			j, getErr := h.jobRepo.GetByID(ctx, job.ID)
+			if getErr == nil && j != nil && j.Status == models.JobStatusCancelled {
+				return worker.ErrJobCancelled
+			}
+		}
+	}
+	return err
+}
+
 func (h *GPUPoolHandlers) runScriptWithExtraEnv(ctx context.Context, jl *jobLog, job *models.Job, extraEnv []string, script string, args ...string) error {
 	root := h.automicaRoot()
 	cmdPath := filepath.Join(root, script)
-	cmd := exec.CommandContext(ctx, "bash", append([]string{cmdPath}, args...)...)
+	var cmdPtr atomic.Pointer[exec.Cmd]
+	watchCtx, stopWatch := h.startCancelWatcher(ctx, job, &cmdPtr)
+	defer stopWatch()
+
+	cmd := exec.CommandContext(watchCtx, "bash", append([]string{cmdPath}, args...)...)
+	cmdPtr.Store(cmd)
 	cmd.Dir = root
 	baseEnv := h.e2eOnlyEnv(root, job)
 	if len(extraEnv) > 0 {
@@ -225,7 +279,7 @@ func (h *GPUPoolHandlers) runScriptWithExtraEnv(ctx context.Context, jl *jobLog,
 		jl.writeLine("worker", execLine)
 	}
 
-	err := cmd.Run()
+	err := h.finishCmdRun(ctx, watchCtx, job, cmd.Run())
 	if stdout.Len() > 0 {
 		log.Printf("stdout:\n%s", stdout.String())
 	}
@@ -233,6 +287,9 @@ func (h *GPUPoolHandlers) runScriptWithExtraEnv(ctx context.Context, jl *jobLog,
 		log.Printf("stderr:\n%s", stderr.String())
 	}
 	if err != nil {
+		if worker.IsJobCancelled(err) {
+			return err
+		}
 		return fmt.Errorf("%s: %w\nstderr: %s", script, err, stderr.String())
 	}
 	return nil
@@ -241,7 +298,12 @@ func (h *GPUPoolHandlers) runScriptWithExtraEnv(ctx context.Context, jl *jobLog,
 func (h *GPUPoolHandlers) runPipeline(ctx context.Context, jl *jobLog, job *models.Job, serviceName, stages string) error {
 	root := h.automicaRoot()
 	pipeline := filepath.Join(root, "services/pipeline/run_pipeline.sh")
-	cmd := exec.CommandContext(ctx, "bash", pipeline, serviceName)
+	var cmdPtr atomic.Pointer[exec.Cmd]
+	watchCtx, stopWatch := h.startCancelWatcher(ctx, job, &cmdPtr)
+	defer stopWatch()
+
+	cmd := exec.CommandContext(watchCtx, "bash", pipeline, serviceName)
+	cmdPtr.Store(cmd)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), append(h.e2eOnlyEnv(root, job),
 		"PIPELINE_STAGE="+stages,
@@ -262,11 +324,14 @@ func (h *GPUPoolHandlers) runPipeline(ctx context.Context, jl *jobLog, job *mode
 		jl.writeLine("worker", execLine)
 	}
 
-	err := cmd.Run()
+	err := h.finishCmdRun(ctx, watchCtx, job, cmd.Run())
 	if out.Len() > 0 {
 		log.Printf("pipeline stdout:\n%s", out.String())
 	}
 	if err != nil {
+		if worker.IsJobCancelled(err) {
+			return err
+		}
 		return fmt.Errorf("pipeline %s: %w\n%s", stages, err, out.String())
 	}
 	return nil
@@ -356,12 +421,43 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 	// Option 1: full bootstrap on E2E. Retries reuse an existing node when deploy failed mid-flight.
 	bootstrapArgs := h.bootstrapArgsForJob(job, serviceName)
 	if err := h.runScript(ctx, jl, job, "scripts/e2e_bootstrap.sh", bootstrapArgs...); err != nil {
+		if worker.IsJobCancelled(err) {
+			return nil
+		}
 		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+	}
+
+	pool, err = h.poolRepo.GetByServiceTag(ctx, serviceTag)
+	if err != nil {
+		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+	}
+	if pool != nil && pool.RefCount == 0 {
+		cont, handleErr := h.gpuPoolService.HandleProvisionNoSessions(ctx, serviceTag, false)
+		if handleErr != nil {
+			log.Printf("provision post-bootstrap no-session for %s: %v", serviceTag, handleErr)
+		}
+		if !cont {
+			return nil
+		}
 	}
 
 	// Gateway + beta registry + Mongo pool ready (same stages as Mac bootstrap pipeline).
 	if err := h.runPipeline(ctx, jl, job, serviceName, "gateway,gateway-smoke,beta-seed,gpu-pool-sync"); err != nil {
+		if worker.IsJobCancelled(err) {
+			return nil
+		}
 		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+	}
+
+	pool, err = h.poolRepo.GetByServiceTag(ctx, serviceTag)
+	if err != nil {
+		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+	}
+	if pool != nil && pool.RefCount == 0 {
+		if _, handleErr := h.gpuPoolService.HandleProvisionNoSessions(ctx, serviceTag, true); handleErr != nil {
+			log.Printf("provision post-pipeline no-session for %s: %v", serviceTag, handleErr)
+		}
+		return nil
 	}
 
 	if err := h.runScript(ctx, jl, job, "scripts/e2e_ensure_firewall.sh", serviceName); err != nil {
@@ -385,6 +481,10 @@ func (h *GPUPoolHandlers) handleDestroy(ctx context.Context, job *models.Job) er
 		pool, poolErr := h.poolRepo.GetByServiceTag(ctx, serviceTag)
 		if poolErr != nil {
 			return poolErr
+		}
+		if pool != nil && pool.RefCount > 0 {
+			log.Printf("destroy cancelled: refCount=%d for %s", pool.RefCount, serviceTag)
+			return nil
 		}
 		switch {
 		case pool != nil && pool.NodeID != "":

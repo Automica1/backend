@@ -15,11 +15,11 @@ func SanitizeGPUPoolUserError(raw string) string {
 		strings.Contains(lower, "prepare_offline"),
 		strings.Contains(lower, "e2e-offline-cache"),
 		strings.Contains(lower, "download_offline_deps"):
-		return "Test GPU setup could not finish preparing dependencies. Please try Start session again in a few minutes."
+		return "Test resource setup could not finish preparing dependencies. Please try Start session again in a few minutes."
 
 	case strings.Contains(lower, "412"),
 		strings.Contains(lower, "precondition failed"):
-		return "The test GPU was still shutting down from a previous run. Please wait a minute and try Start session again."
+		return "The test resource was still shutting down from a previous run. Please wait a minute and try Start session again."
 
 	case strings.Contains(lower, "failed recreate"),
 		strings.Contains(lower, "e2e node") && strings.Contains(lower, "failed"),
@@ -27,26 +27,26 @@ func SanitizeGPUPoolUserError(raw string) string {
 		strings.Contains(lower, "provider error"),
 		strings.Contains(lower, "provision stalled"),
 		strings.Contains(lower, "gpu plan temporarily not available"):
-		return "All test GPUs are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. Try again in about 15 minutes."
 
 	case strings.Contains(lower, "timed out"),
 		strings.Contains(lower, "stalled"),
 		strings.Contains(lower, "ssh not reachable"),
 		strings.Contains(lower, "wait-ssh"):
-		return "All test GPUs are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. Try again in about 15 minutes."
 
 	case strings.Contains(lower, "e2e api"),
 		strings.Contains(lower, "503"),
 		strings.Contains(lower, "502"),
 		strings.Contains(lower, "504"):
-		return "All test GPUs are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. Try again in about 15 minutes."
 
 	case strings.Contains(lower, "gateway"),
 		strings.Contains(lower, "beta-seed"):
-		return "All test GPUs are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. Try again in about 15 minutes."
 
 	default:
-		return "All test GPUs are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. Try again in about 15 minutes."
 	}
 }
 
