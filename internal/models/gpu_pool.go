@@ -125,6 +125,8 @@ type GPUPoolStatusResponse struct {
 	// status poll, or idempotent Start). False on Start immediately after creating a new session.
 	ReattachedSession     bool        `json:"reattachedSession"`
 	SessionEndReason      string      `json:"sessionEndReason,omitempty"`
+	ReconnectEligible     bool        `json:"reconnectEligible"`
+	ReconnectUntil        *time.Time  `json:"reconnectUntil,omitempty"`
 }
 
 // ServiceTagToPipelineService maps beta gateway tags to pipeline service names.

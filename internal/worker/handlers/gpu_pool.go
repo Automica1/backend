@@ -347,14 +347,8 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 	}
 	if pool.RefCount == 0 {
 		log.Printf("provision skipped: refCount=0 for %s", serviceTag)
-		if pool.State == models.GPUPoolStateProvisioning {
-			update := map[string]any{"state": models.GPUPoolStateIdle}
-			if pool.LastError != "" {
-				update["state"] = models.GPUPoolStateFailed
-			}
-			if _, err := h.poolRepo.Update(ctx, serviceTag, update); err != nil {
-				log.Printf("provision skip state reset for %s: %v", serviceTag, err)
-			}
+		if err := h.gpuPoolService.OnProvisionSkippedNoSessions(ctx, serviceTag); err != nil {
+			log.Printf("provision skip handling for %s: %v", serviceTag, err)
 		}
 		return nil
 	}

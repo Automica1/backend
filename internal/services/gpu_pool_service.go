@@ -21,6 +21,7 @@ type GPUPoolService interface {
 	ReconcileIdleWarmPools(ctx context.Context) error
 	HandleMeterTick(ctx context.Context, serviceTag, userID string) error
 	HandleProvisionFailed(ctx context.Context, serviceTag string) error
+	OnProvisionSkippedNoSessions(ctx context.Context, serviceTag string) error
 }
 
 type gpuPoolService struct {
@@ -408,6 +409,43 @@ func (s *gpuPoolService) HandleProvisionFailed(ctx context.Context, serviceTag s
 	return s.refundFailedPoolSessions(ctx, serviceTag)
 }
 
+// OnProvisionSkippedNoSessions keeps warm nodes in grace or holds provisioning during reconnect cooldown.
+func (s *gpuPoolService) OnProvisionSkippedNoSessions(ctx context.Context, serviceTag string) error {
+	pool, err := s.poolRepo.GetByServiceTag(ctx, serviceTag)
+	if err != nil || pool == nil || pool.RefCount > 0 {
+		return err
+	}
+	if pool.TeardownOnUserStop() {
+		if pool.State == models.GPUPoolStateDraining && pool.DrainReason == models.GPUPoolDrainReasonUserGrace {
+			return nil
+		}
+		serviceName, svcErr := s.resolveServiceName(serviceTag)
+		if svcErr != nil {
+			return nil
+		}
+		return s.maybeScheduleUserGraceDestroy(ctx, pool, serviceName)
+	}
+	if pool.State != models.GPUPoolStateProvisioning {
+		return nil
+	}
+	if time.Since(pool.UpdatedAt) < s.reconnectCooldown() {
+		return nil
+	}
+	active, err := s.jobSvc.HasActiveByIdempotencyKey(ctx, s.provisionKey(serviceTag))
+	if err != nil {
+		return err
+	}
+	if active {
+		return nil
+	}
+	update := map[string]any{"state": models.GPUPoolStateIdle}
+	if pool.LastError != "" {
+		update["state"] = models.GPUPoolStateFailed
+	}
+	_, err = s.poolRepo.Update(ctx, serviceTag, update)
+	return err
+}
+
 type gpuPoolStatusOpts struct {
 	freshSessionStart bool
 }
@@ -453,6 +491,7 @@ func (s *gpuPoolService) toStatus(pool *models.GPUPool, userID string, opts ...g
 		(pool.State == models.GPUPoolStateFailed || pool.State == models.GPUPoolStateIdle) {
 		lastError = ""
 	}
+	reconnectEligible, reconnectUntil, _ := s.reconnectWindow(pool, userID)
 	return &models.GPUPoolStatusResponse{
 		ServiceTag:            pool.ServiceTag,
 		ServiceName:           pool.ServiceName,
@@ -479,6 +518,8 @@ func (s *gpuPoolService) toStatus(pool *models.GPUPool, userID string, opts ...g
 		BillingActive:         billingActive,
 		ReattachedSession:     gpuPoolReattachedSession(userActive, activeSess != nil, o.freshSessionStart),
 		SessionEndReason:      endReason,
+		ReconnectEligible:     reconnectEligible,
+		ReconnectUntil:        reconnectUntil,
 	}
 }
 
@@ -542,7 +583,7 @@ func (s *gpuPoolService) Start(ctx context.Context, userID, serviceTag string) (
 
 	alreadyActive := existing != nil && activeSession(existing, userID) != nil
 	if !alreadyActive {
-		if err := s.checkStartCredits(ctx, userID); err != nil {
+		if err := s.checkStartCredits(ctx, userID, serviceTag); err != nil {
 			return nil, err
 		}
 	}

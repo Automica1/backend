@@ -30,7 +30,8 @@ type WorkerConfig struct {
 	CreditsPerMin    int
 	StartupCredits   int
 	MinStartCredits  int
-	MeterIntervalSec int
+	MeterIntervalSec      int
+	ReconnectCooldownSec  int
 }
 
 type RazorpayConfig struct {

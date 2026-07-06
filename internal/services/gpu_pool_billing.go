@@ -50,6 +50,48 @@ func nextMeterChargeAt(sess *models.GPUPoolSession, interval time.Duration) *tim
 	return &t
 }
 
+func (s *gpuPoolService) reconnectCooldown() time.Duration {
+	if s.cfg.Worker.ReconnectCooldownSec > 0 {
+		return time.Duration(s.cfg.Worker.ReconnectCooldownSec) * time.Second
+	}
+	return 5 * time.Minute
+}
+
+func poolReusableForReconnect(state models.GPUPoolState, drainReason models.GPUPoolDrainReason) bool {
+	switch state {
+	case models.GPUPoolStateProvisioning, models.GPUPoolStateReady:
+		return true
+	case models.GPUPoolStateDraining:
+		return drainReason == models.GPUPoolDrainReasonUserGrace
+	default:
+		return false
+	}
+}
+
+// reconnectWindow is true when the user may Start again without a fresh startup charge.
+func (s *gpuPoolService) reconnectWindow(pool *models.GPUPool, userID string) (eligible bool, until *time.Time, skipStartup bool) {
+	if pool == nil || userID == "" {
+		return false, nil, false
+	}
+	stopped := lastStoppedSession(pool, userID)
+	if stopped == nil || stopped.StoppedAt == nil {
+		return false, nil, false
+	}
+	if stopped.CreditsStartupCharged <= 0 || stopped.StartupRefunded {
+		return false, nil, false
+	}
+	untilTime := stopped.StoppedAt.Add(s.reconnectCooldown())
+	if time.Now().UTC().After(untilTime) {
+		return false, nil, false
+	}
+	if !poolReusableForReconnect(pool.State, pool.DrainReason) {
+		if pool.State != models.GPUPoolStateProvisioning || pool.RefCount != 0 {
+			return false, nil, false
+		}
+	}
+	return true, &untilTime, true
+}
+
 func (s *gpuPoolService) chargeSessionStartup(ctx context.Context, serviceTag, userID string) error {
 	pool, err := s.poolRepo.GetByServiceTag(ctx, serviceTag)
 	if err != nil {
@@ -64,6 +106,13 @@ func (s *gpuPoolService) chargeSessionStartup(ctx context.Context, serviceTag, u
 	}
 
 	amount := s.startupCredits()
+	if eligible, _, skip := s.reconnectWindow(pool, userID); skip && eligible {
+		_, err = s.poolRepo.UpdateActiveSession(ctx, serviceTag, userID, func(s *models.GPUPoolSession) {
+			s.CreditsStartupCharged = amount
+		})
+		return err
+	}
+
 	if err := s.deductSessionCredits(ctx, userID, amount); err != nil {
 		return err
 	}
@@ -200,12 +249,16 @@ func (s *gpuPoolService) sessionStatusFields(pool *models.GPUPool, userID string
 	return 0, false, ""
 }
 
-func (s *gpuPoolService) checkStartCredits(ctx context.Context, userID string) error {
+func (s *gpuPoolService) checkStartCredits(ctx context.Context, userID, serviceTag string) error {
 	balance, err := s.creditsSvc.GetBalance(ctx, userID)
 	if err != nil {
 		return err
 	}
 	min := s.minStartCredits()
+	pool, _ := s.poolRepo.GetByServiceTag(ctx, serviceTag)
+	if eligible, _, _ := s.reconnectWindow(pool, userID); eligible {
+		min = s.creditsPerMinute()
+	}
 	if balance.Credits < min {
 		return apperrors.NewAppError(
 			apperrors.ErrInsufficientCredits,

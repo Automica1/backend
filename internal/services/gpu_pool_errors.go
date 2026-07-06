@@ -24,27 +24,29 @@ func SanitizeGPUPoolUserError(raw string) string {
 	case strings.Contains(lower, "failed recreate"),
 		strings.Contains(lower, "e2e node") && strings.Contains(lower, "failed"),
 		strings.Contains(lower, "stalled in status"),
-		strings.Contains(lower, "provider error"):
-		return "The GPU provider could not start the test VM. Please try Start session again in a few minutes."
+		strings.Contains(lower, "provider error"),
+		strings.Contains(lower, "provision stalled"),
+		strings.Contains(lower, "gpu plan temporarily not available"):
+		return "All test GPUs are busy right now. Try again in about 15 minutes."
 
 	case strings.Contains(lower, "timed out"),
 		strings.Contains(lower, "stalled"),
 		strings.Contains(lower, "ssh not reachable"),
 		strings.Contains(lower, "wait-ssh"):
-		return "The test GPU took too long to become ready. Please try Start session again."
+		return "All test GPUs are busy right now. Try again in about 15 minutes."
 
 	case strings.Contains(lower, "e2e api"),
 		strings.Contains(lower, "503"),
 		strings.Contains(lower, "502"),
 		strings.Contains(lower, "504"):
-		return "The GPU provider is temporarily unavailable. Please try again later."
+		return "All test GPUs are busy right now. Try again in about 15 minutes."
 
 	case strings.Contains(lower, "gateway"),
 		strings.Contains(lower, "beta-seed"):
-		return "The test GPU started but routing setup failed. Please try Start session again."
+		return "All test GPUs are busy right now. Try again in about 15 minutes."
 
 	default:
-		return "Could not start the test GPU. Please try Start session again in a few minutes."
+		return "All test GPUs are busy right now. Try again in about 15 minutes."
 	}
 }
 
