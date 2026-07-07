@@ -31,6 +31,28 @@ func TestReconnectWindowOrphanBoot(t *testing.T) {
 	}
 }
 
+func TestReconnectWindowIdlePoolAfterDestroy(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	stopped := now.Add(-2 * time.Minute)
+	svc := &gpuPoolService{cfg: &config.Config{}}
+	pool := &models.GPUPool{
+		State:    models.GPUPoolStateIdle,
+		RefCount: 0,
+		Sessions: []models.GPUPoolSession{
+			{
+				UserID:                "user-1",
+				StoppedAt:             &stopped,
+				CreditsStartupCharged: 6,
+			},
+		},
+	}
+	eligible, until, skip := svc.reconnectWindow(pool, "user-1")
+	if !eligible || !skip || until == nil {
+		t.Fatalf("expected reconnect after destroy (idle pool), got eligible=%v skip=%v until=%v", eligible, skip, until)
+	}
+}
+
 func TestReconnectWindowExpired(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()

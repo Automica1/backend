@@ -69,6 +69,7 @@ func poolReusableForReconnect(state models.GPUPoolState, drainReason models.GPUP
 }
 
 // reconnectWindow is true when the user may Start again without a fresh startup charge.
+// Pool state does not gate eligibility — A3/A5: early Stop + destroy still keeps the window.
 func (s *gpuPoolService) reconnectWindow(pool *models.GPUPool, userID string) (eligible bool, until *time.Time, skipStartup bool) {
 	if pool == nil || userID == "" {
 		return false, nil, false
@@ -83,11 +84,6 @@ func (s *gpuPoolService) reconnectWindow(pool *models.GPUPool, userID string) (e
 	untilTime := stopped.StoppedAt.Add(s.reconnectCooldown())
 	if time.Now().UTC().After(untilTime) {
 		return false, nil, false
-	}
-	if !poolReusableForReconnect(pool.State, pool.DrainReason) {
-		if pool.State != models.GPUPoolStateProvisioning || pool.RefCount != 0 {
-			return false, nil, false
-		}
 	}
 	return true, &untilTime, true
 }

@@ -24,6 +24,7 @@ type JobRepository interface {
 	MarkFailed(ctx context.Context, id primitive.ObjectID, errMsg string, retry bool, runAfter time.Time) error
 	MarkDead(ctx context.Context, id primitive.ObjectID, errMsg string) error
 	ReleaseStaleLocks(ctx context.Context, workerID string, staleBefore time.Time) (int64, error)
+	ReleaseAllRunningLocks(ctx context.Context, reason string) (int64, error)
 	CancelPendingByIdempotencyKey(ctx context.Context, key string) (int64, error)
 	CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error)
 	MarkCancelled(ctx context.Context, id primitive.ObjectID) error
@@ -225,6 +226,23 @@ func (r *jobRepository) MarkDead(ctx context.Context, id primitive.ObjectID, err
 		},
 	})
 	return err
+}
+
+func (r *jobRepository) ReleaseAllRunningLocks(ctx context.Context, reason string) (int64, error) {
+	result, err := r.collection.UpdateMany(ctx, bson.M{
+		"status": models.JobStatusRunning,
+	}, bson.M{
+		"$set": bson.M{
+			"status":    models.JobStatusPending,
+			"lockedBy":  "",
+			"lockedAt":  nil,
+			"lastError": reason,
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ModifiedCount, nil
 }
 
 func (r *jobRepository) ReleaseStaleLocks(ctx context.Context, workerID string, staleBefore time.Time) (int64, error) {

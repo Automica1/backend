@@ -71,6 +71,12 @@ func (w *Worker) Run(ctx context.Context) {
 
 	log.Printf("automica-worker started id=%s poll=%s", w.workerID, poll)
 
+	if count, err := w.repo.ReleaseAllRunningLocks(ctx, "worker restarted: reclaimed orphaned running job"); err != nil {
+		log.Printf("recover orphaned running jobs error: %v", err)
+	} else if count > 0 {
+		log.Printf("reclaimed %d orphaned running job(s) on startup", count)
+	}
+
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
@@ -137,8 +143,9 @@ func (w *Worker) processOne(ctx context.Context) bool {
 	}
 
 	err = handler(runCtx, job)
+	markCtx := context.Background()
 	if err == nil {
-		if markErr := w.repo.MarkCompleted(ctx, job.ID); markErr != nil {
+		if markErr := w.repo.MarkCompleted(markCtx, job.ID); markErr != nil {
 			log.Printf("mark completed error: %v", markErr)
 		}
 		log.Printf("job completed id=%s type=%s", job.ID.Hex(), job.Type)
@@ -146,7 +153,7 @@ func (w *Worker) processOne(ctx context.Context) bool {
 	}
 
 	if IsJobCancelled(err) {
-		if markErr := w.repo.MarkCancelled(ctx, job.ID); markErr != nil {
+		if markErr := w.repo.MarkCancelled(markCtx, job.ID); markErr != nil {
 			log.Printf("mark cancelled error: %v", markErr)
 		}
 		log.Printf("job cancelled id=%s type=%s", job.ID.Hex(), job.Type)
@@ -160,7 +167,7 @@ func (w *Worker) processOne(ctx context.Context) bool {
 		backoff = 30 * time.Second
 	}
 	runAfter := time.Now().UTC().Add(backoff)
-	if markErr := w.repo.MarkFailed(ctx, job.ID, err.Error(), retry, runAfter); markErr != nil {
+	if markErr := w.repo.MarkFailed(markCtx, job.ID, err.Error(), retry, runAfter); markErr != nil {
 		log.Printf("mark failed error: %v", markErr)
 	}
 	return true
