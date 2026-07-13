@@ -279,10 +279,23 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Delete("/{passId}", h.GuestPass.RevokePass)
 				})
 
-				// GPU pool admin
+				// GPU pool admin (control plane)
 				r.Get("/gpu-pools", h.GPUPool.ListAdmin)
+				r.Get("/gpu-pools/provision-config", h.GPUPool.GetProvisionConfig)
+				r.Put("/gpu-pools/provision-config", h.GPUPool.PutProvisionConfig)
 				r.Post("/gpu-pools/shutdown", h.GPUPool.AdminShutdown)
 				r.Post("/gpu-pools/cancel-grace", h.GPUPool.AdminCancelGrace)
+				r.Route("/gpu-pools/{serviceTag}", func(r chi.Router) {
+					r.Get("/", h.GPUPool.GetAdminPool)
+					r.Get("/policy", h.GPUPool.GetPolicy)
+					r.Put("/policy", h.GPUPool.PutPolicy)
+					r.Get("/jobs", h.GPUPool.ListJobs)
+					r.Get("/job-log", h.GPUPool.GetJobLog)
+					r.Post("/diagnostics", h.GPUPool.RunDiagnostics)
+					r.Post("/abort-provision", h.GPUPool.AdminAbortProvision)
+					r.Post("/retry-provision", h.GPUPool.AdminRetryProvision)
+					r.Get("/support", h.GPUPool.GetSupport)
+				})
 			})
 		})
 

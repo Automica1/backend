@@ -35,15 +35,17 @@ func main() {
 
 	jobRepo := repository.NewJobRepository(db.GetCollection("jobs"))
 	poolRepo := repository.NewGPUPoolRepository(db.GetCollection("gpu_pools"))
+	provisionConfigRepo := repository.NewGPUProvisionConfigRepository(db.GetCollection("gpu_provision_configs"))
 	userRepo := repository.NewUserRepository(db.GetCollection("users"))
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
 	jobSvc := services.NewJobService(jobRepo)
 	creditsSvc := services.NewCreditsService(creditsRepo, userRepo)
-	gpuPoolSvc := services.NewGPUPoolService(poolRepo, jobSvc, creditsSvc, cfg)
+	provisionConfigSvc := services.NewGPUProvisionConfigService(provisionConfigRepo)
+	gpuPoolSvc := services.NewGPUPoolService(poolRepo, jobSvc, creditsSvc, provisionConfigSvc, cfg)
 
 	registry := worker.NewRegistry()
 	workerhandlers.RegisterSystemHandlers(registry)
-	gpuHandlers := workerhandlers.NewGPUPoolHandlers(cfg, poolRepo, jobRepo, gpuPoolSvc)
+	gpuHandlers := workerhandlers.NewGPUPoolHandlers(cfg, poolRepo, jobRepo, gpuPoolSvc, provisionConfigSvc)
 	gpuHandlers.Register(registry)
 
 	w := worker.New(cfg, jobRepo, registry)

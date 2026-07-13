@@ -58,6 +58,7 @@ func main() {
 	planRepo := repository.NewPlanRepository(db.GetCollection("plans"))                // Add plan repository
 	jobRepo := repository.NewJobRepository(db.GetCollection("jobs"))
 	gpuPoolRepo := repository.NewGPUPoolRepository(db.GetCollection("gpu_pools"))
+	gpuProvisionConfigRepo := repository.NewGPUProvisionConfigRepository(db.GetCollection("gpu_provision_configs"))
 	runtimeLogRepo := repository.NewRuntimeLogRepository(
 		cfg.Logs.AccessPath,
 		cfg.Logs.ErrorPath,
@@ -80,7 +81,8 @@ func main() {
 	subService := services.NewSubscriptionService(subRepo, paymentEventRepo, creditsService, userService, planService, emailService, cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
 	adminService := services.NewAdminService(auditRepo, runtimeLogRepo, userService, tokenService, planService, usageService, subService)
 	jobService := services.NewJobService(jobRepo)
-	gpuPoolService := services.NewGPUPoolService(gpuPoolRepo, jobService, creditsService, cfg)
+	gpuProvisionConfigService := services.NewGPUProvisionConfigService(gpuProvisionConfigRepo)
+	gpuPoolService := services.NewGPUPoolService(gpuPoolRepo, jobService, creditsService, gpuProvisionConfigService, cfg)
 
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
@@ -141,7 +143,7 @@ func main() {
 		Usage:        handlers.NewUsageHandler(usageService),                    // Usage handler for admin endpoints
 		Subscription: handlers.NewSubscriptionHandler(subService, adminService), // Add subscription handler
 		Plan:         handlers.NewPlanHandler(planService, adminService),        // Add plan handler
-		GPUPool:      handlers.NewGPUPoolHandler(gpuPoolService, userService),
+		GPUPool:      handlers.NewGPUPoolHandler(gpuPoolService, gpuProvisionConfigService, userService, jobRepo, jobService, cfg),
 	}
 
 	// Verify handlers are initialized

@@ -79,14 +79,60 @@ type GPUPool struct {
 	NodeID           string             `bson:"nodeId,omitempty" json:"nodeId,omitempty"`
 	PublicIP         string             `bson:"publicIp,omitempty" json:"publicIp,omitempty"`
 	PreviousPublicIP string             `bson:"previousPublicIp,omitempty" json:"previousPublicIp,omitempty"`
+	Provider         string             `bson:"provider,omitempty" json:"provider,omitempty"`
+	InstanceType     string             `bson:"instanceType,omitempty" json:"instanceType,omitempty"`
+	CapacityType     string             `bson:"capacityType,omitempty" json:"capacityType,omitempty"`
+	Region           string             `bson:"region,omitempty" json:"region,omitempty"`
+	DeployVersion    string             `bson:"deployVersion,omitempty" json:"deployVersion,omitempty"`
 	ReadyAt          *time.Time         `bson:"readyAt,omitempty" json:"readyAt,omitempty"`
 	DrainStartedAt   *time.Time         `bson:"drainStartedAt,omitempty" json:"drainStartedAt,omitempty"`
 	DrainReason      GPUPoolDrainReason `bson:"drainReason,omitempty" json:"drainReason,omitempty"`
 	AdminWarmHold    bool               `bson:"adminWarmHold,omitempty" json:"adminWarmHold,omitempty"`
 	Sessions         []GPUPoolSession   `bson:"sessions" json:"sessions"`
 	LastError        string             `bson:"lastError,omitempty" json:"lastError,omitempty"`
+	LastErrorRaw     string             `bson:"lastErrorRaw,omitempty" json:"lastErrorRaw,omitempty"`
 	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
 	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
+}
+
+// GPUPoolAdminEntry extends pool rows for the admin control plane list.
+type GPUPoolAdminEntry struct {
+	GPUPool
+	GracePeriodSec int    `json:"gracePeriodSec"`
+	PolicySummary  string `json:"policySummary,omitempty"`
+	ActiveJob      *Job   `json:"activeJob,omitempty"`
+}
+
+// GPUPoolBillingInfo is read-only product billing shown in admin UI.
+type GPUPoolBillingInfo struct {
+	StartupCredits int  `json:"startupCredits"`
+	CreditsPerMin  int  `json:"creditsPerMin"`
+	ReadOnly       bool `json:"readOnly"`
+}
+
+// GPUPoolSupportSessionView is a sanitized session row for support.
+type GPUPoolSupportSessionView struct {
+	UserID                string     `json:"userId"`
+	StartedAt             time.Time  `json:"startedAt"`
+	StoppedAt             *time.Time `json:"stoppedAt,omitempty"`
+	CreditsCharged        int        `json:"creditsCharged"`
+	CreditsStartupCharged int        `json:"creditsStartupCharged,omitempty"`
+	Active                bool       `json:"active"`
+}
+
+// GPUPoolSupportView is a sanitized pool status for testers/support.
+type GPUPoolSupportView struct {
+	ServiceTag       string                      `json:"serviceTag"`
+	State            GPUPoolState                `json:"state"`
+	Provider         string                      `json:"provider,omitempty"`
+	ProviderLabel    string                      `json:"providerLabel,omitempty"`
+	PublicIP         string                      `json:"publicIp,omitempty"`
+	RefCount         int                         `json:"refCount"`
+	CanStart         bool                        `json:"canStart"`
+	UserFacingError  string                      `json:"userFacingError,omitempty"`
+	LastErrorRaw     string                      `json:"lastErrorRaw,omitempty"`
+	MaintenanceBlock bool                        `json:"maintenanceBlock"`
+	Sessions         []GPUPoolSupportSessionView `json:"sessions,omitempty"`
 }
 
 type GPUPoolStartRequest struct {

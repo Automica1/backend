@@ -110,6 +110,7 @@ func Load() (*Config, error) {
 			StartupCredits:   getEnvAsInt("GPU_POOL_STARTUP_CREDITS", 20),
 			MinStartCredits:  getEnvAsInt("GPU_POOL_MIN_START_CREDITS", 30),
 			MeterIntervalSec: getEnvAsInt("GPU_POOL_METER_INTERVAL_SEC", 60),
+			ReconnectCooldownSec: getEnvAsInt("GPU_POOL_RECONNECT_COOLDOWN_SEC", 300),
 		},
 	}
 

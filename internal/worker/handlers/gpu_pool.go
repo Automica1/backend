@@ -77,21 +77,21 @@ func (jl *jobLog) close() {
 }
 
 type GPUPoolHandlers struct {
-	cfg            *config.Config
-	poolRepo       repository.GPUPoolRepository
-	jobRepo        repository.JobRepository
-	gpuPoolService services.GPUPoolService
+	cfg                    *config.Config
+	poolRepo               repository.GPUPoolRepository
+	jobRepo                repository.JobRepository
+	gpuPoolService         services.GPUPoolService
+	provisionConfigService services.GPUProvisionConfigService
 }
 
-func NewGPUPoolHandlers(cfg *config.Config, poolRepo repository.GPUPoolRepository, jobRepo repository.JobRepository, gpuPoolService services.GPUPoolService) *GPUPoolHandlers {
-	return &GPUPoolHandlers{cfg: cfg, poolRepo: poolRepo, jobRepo: jobRepo, gpuPoolService: gpuPoolService}
+func NewGPUPoolHandlers(cfg *config.Config, poolRepo repository.GPUPoolRepository, jobRepo repository.JobRepository, gpuPoolService services.GPUPoolService, provisionConfigService services.GPUProvisionConfigService) *GPUPoolHandlers {
+	return &GPUPoolHandlers{cfg: cfg, poolRepo: poolRepo, jobRepo: jobRepo, gpuPoolService: gpuPoolService, provisionConfigService: provisionConfigService}
 }
 
 func (h *GPUPoolHandlers) Register(registry *worker.Registry) {
 	registry.Register(models.JobTypeGPUPoolProvision, h.handleProvision)
 	registry.Register(models.JobTypeGPUPoolDestroy, h.handleDestroy)
 	registry.Register(models.JobTypeGPUPoolGraceDestroy, h.handleGraceDestroy)
-	registry.Register(models.JobTypeGPUPoolHealthCheck, h.handleHealthCheck)
 	registry.Register(models.JobTypeGPUPoolMeterTick, h.handleMeterTick)
 }
 
@@ -105,9 +105,8 @@ func (h *GPUPoolHandlers) automicaRoot() string {
 	return "."
 }
 
-// e2eOnlyEnv: option-1 GPU pool path — build on E2E GPU (SKIP_LOCAL_PREP); Ollama on E2E only.
-// Shorter E2E timeouts for user-facing Start Testing (fail fast vs Mac manual 20m wait).
-func (h *GPUPoolHandlers) e2eOnlyEnv(root string, job *models.Job) []string {
+// workerBootstrapEnv builds shell env for GPU pool worker jobs from policy (no hardcoded timeouts).
+func (h *GPUPoolHandlers) workerBootstrapEnv(root string, job *models.Job) []string {
 	target := os.Getenv("AUTOMICA_TARGET")
 	if target == "" {
 		target = "dev2"
@@ -116,51 +115,68 @@ func (h *GPUPoolHandlers) e2eOnlyEnv(root string, job *models.Job) []string {
 		"AUTOMICA_ROOT=" + root,
 		"AUTOMICA_TARGET=" + target,
 		"ROOT=" + root,
-		"SKIP_LOCAL_PREP=1",          // no dev2 docker tar — E2E pulls base image natively
-		"SKIP_OLLAMA_OFFLINE_PREP=1", // large model pulled on E2E GPU only
+		"SKIP_LOCAL_PREP=1",
+		"SKIP_OLLAMA_OFFLINE_PREP=1",
 		"E2E_USE_SAVED_IMAGE=0",
-		"E2E_WAIT_TIMEOUT_SEC=600",  // 10 min max wait-for-running (Mac manual default 1200)
-		"E2E_STALL_SEC=360",         // 6 min unchanged Creating/Deleting → fail
-		"E2E_DESTROY_WAIT_SEC=180",  // 3 min max wait for delete during --fresh teardown
 		"GPU_POOL_SYNC_NODE_OWNER=user",
+		"PIPELINE_STAGE=e2e-nvidia,e2e-sync,e2e-ensure-ollama,e2e-ollama,e2e-deploy,e2e-smoke",
 	}
 	if job != nil {
 		env = append(env, fmt.Sprintf("WORKER_JOB_ATTEMPT=%d", job.Attempts))
+		if tag := h.payloadString(job, "serviceTag"); tag != "" && h.provisionConfigService != nil {
+			if cfg, err := h.provisionConfigService.GetOrDefault(context.Background(), tag); err == nil && cfg != nil {
+				env = append(env, h.provisionConfigService.WorkerEnv(cfg)...)
+			}
+		}
 	}
 	return env
 }
 
 type provisionState struct {
+	Provider         string `json:"provider"`
 	NodeID           string `json:"node_id"`
 	PublicIP         string `json:"public_ip"`
 	PreviousPublicIP string `json:"previous_public_ip"`
 	Status           string `json:"status"`
 }
 
+func (h *GPUPoolHandlers) provisionStatePaths() []string {
+	root := h.automicaRoot()
+	reg := filepath.Join(root, "services/pipeline/registry")
+	return []string{
+		filepath.Join(reg, ".gpu_provision_state.json"),
+		filepath.Join(reg, ".e2e_provision_state.json"),
+	}
+}
+
 func (h *GPUPoolHandlers) provisionStatePath() string {
-	return filepath.Join(h.automicaRoot(), "services/pipeline/registry/.e2e_provision_state.json")
+	return h.provisionStatePaths()[0]
 }
 
 func (h *GPUPoolHandlers) clearProvisionState() {
-	_ = os.Remove(h.provisionStatePath())
+	for _, p := range h.provisionStatePaths() {
+		_ = os.Remove(p)
+	}
 }
 
-func (h *GPUPoolHandlers) e2eNodeListed(nodeID string) bool {
-	if nodeID == "" {
+func (h *GPUPoolHandlers) nodeListed(st *provisionState) bool {
+	if st == nil || st.NodeID == "" {
 		return false
 	}
+	provider := strings.ToLower(strings.TrimSpace(st.Provider))
+	if provider == "" {
+		provider = "e2e"
+	}
+	root := h.automicaRoot()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	root := h.automicaRoot()
-	cmd := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts/e2e_provision_node.sh"), "list-nodes")
+	cmd := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts/gpu_provision_node.sh"), "node-live")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "AUTOMICA_ROOT="+root)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("provision state check: list-nodes failed: %v", err)
+	cmd.Env = append(os.Environ(), "AUTOMICA_ROOT="+root, "GPU_PROVIDER="+provider)
+	if err := cmd.Run(); err != nil {
 		return false
 	}
-	return strings.Contains(string(out), nodeID)
+	return true
 }
 
 func provisionStateReusable(st *provisionState) bool {
@@ -184,15 +200,29 @@ func provisionStateReusable(st *provisionState) bool {
 	}
 }
 
-func (h *GPUPoolHandlers) bootstrapArgsForJob(job *models.Job, serviceName string) []string {
+func (h *GPUPoolHandlers) bootstrapArgsForJob(ctx context.Context, job *models.Job, serviceTag, serviceName string) []string {
 	args := []string{serviceName}
-	if job.Attempts > 1 {
-		if st, err := h.readProvisionState(); err == nil && provisionStateReusable(st) && h.e2eNodeListed(st.NodeID) {
-			log.Printf("provision retry attempt=%d/%d: reusing node ip=%s status=%s", job.Attempts, job.MaxAttempts, st.PublicIP, st.Status)
-			return append(args, "--reuse-node")
+	reuseAllowed := true
+	if h.provisionConfigService != nil && serviceTag != "" {
+		if cfg, err := h.provisionConfigService.GetOrDefault(ctx, serviceTag); err == nil && cfg != nil {
+			reuseAllowed = cfg.Retries.ReuseNodeOnRetry
 		}
+	}
+	if reuseAllowed {
+		st, err := h.readProvisionState()
+		if err == nil && provisionStateReusable(st) {
+			if h.nodeListed(st) {
+				log.Printf("provision attempt=%d/%d: reusing live node ip=%s status=%s", job.Attempts, job.MaxAttempts, st.PublicIP, st.Status)
+				return append(args, "--reuse-node")
+			}
+			if job.Attempts > 1 {
+				h.clearProvisionState()
+				log.Printf("provision retry attempt=%d/%d: fresh create (state not live)", job.Attempts, job.MaxAttempts)
+			}
+		}
+	} else if job.Attempts > 1 {
 		h.clearProvisionState()
-		log.Printf("provision retry attempt=%d/%d: fresh create (no live node in E2E)", job.Attempts, job.MaxAttempts)
+		log.Printf("provision retry attempt=%d/%d: fresh create (reuse disabled)", job.Attempts, job.MaxAttempts)
 	}
 	return append(args, "--fresh")
 }
@@ -257,7 +287,7 @@ func (h *GPUPoolHandlers) runScriptWithExtraEnv(ctx context.Context, jl *jobLog,
 	cmd := exec.CommandContext(watchCtx, "bash", append([]string{cmdPath}, args...)...)
 	cmdPtr.Store(cmd)
 	cmd.Dir = root
-	baseEnv := h.e2eOnlyEnv(root, job)
+	baseEnv := h.workerBootstrapEnv(root, job)
 	if len(extraEnv) > 0 {
 		baseEnv = append(baseEnv, extraEnv...)
 	}
@@ -305,7 +335,7 @@ func (h *GPUPoolHandlers) runPipeline(ctx context.Context, jl *jobLog, job *mode
 	cmd := exec.CommandContext(watchCtx, "bash", pipeline, serviceName)
 	cmdPtr.Store(cmd)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), append(h.e2eOnlyEnv(root, job),
+	cmd.Env = append(os.Environ(), append(h.workerBootstrapEnv(root, job),
 		"PIPELINE_STAGE="+stages,
 		"PIPELINE_PROFILE=beta",
 	)...)
@@ -338,9 +368,14 @@ func (h *GPUPoolHandlers) runPipeline(ctx context.Context, jl *jobLog, job *mode
 }
 
 func (h *GPUPoolHandlers) readProvisionState() (*provisionState, error) {
-	root := h.automicaRoot()
-	statePath := filepath.Join(root, "services/pipeline/registry/.e2e_provision_state.json")
-	data, err := os.ReadFile(statePath)
+	var data []byte
+	var err error
+	for _, statePath := range h.provisionStatePaths() {
+		data, err = os.ReadFile(statePath)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -368,9 +403,19 @@ func (h *GPUPoolHandlers) payloadString(job *models.Job, key string) string {
 }
 
 func (h *GPUPoolHandlers) markProvisionFailed(ctx context.Context, serviceTag, errMsg string) {
+	hintMin := 15
+	if h.provisionConfigService != nil {
+		if cfg, err := h.provisionConfigService.GetOrDefault(ctx, serviceTag); err == nil && cfg != nil {
+			cfg.Normalize()
+			if cfg.Lifecycle.UserRetryHintMin > 0 {
+				hintMin = cfg.Lifecycle.UserRetryHintMin
+			}
+		}
+	}
 	_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
-		"state":     models.GPUPoolStateFailed,
-		"lastError": services.SanitizeGPUPoolUserError(errMsg),
+		"state":        models.GPUPoolStateFailed,
+		"lastError":    services.SanitizeGPUPoolUserError(errMsg, hintMin),
+		"lastErrorRaw": errMsg,
 	})
 	if err != nil {
 		log.Printf("mark provision failed for %s: %v", serviceTag, err)
@@ -418,9 +463,9 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 		return nil
 	}
 
-	// Option 1: full bootstrap on E2E. Retries reuse an existing node when deploy failed mid-flight.
-	bootstrapArgs := h.bootstrapArgsForJob(job, serviceName)
-	if err := h.runScript(ctx, jl, job, "scripts/e2e_bootstrap.sh", bootstrapArgs...); err != nil {
+	// Full bootstrap on the GPU node (provider from policy: E2E Networks and/or AWS).
+	bootstrapArgs := h.bootstrapArgsForJob(ctx, job, serviceTag, serviceName)
+	if err := h.runScript(ctx, jl, job, "scripts/gpu_bootstrap.sh", bootstrapArgs...); err != nil {
 		if worker.IsJobCancelled(err) {
 			return nil
 		}
@@ -460,7 +505,7 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 		return nil
 	}
 
-	if err := h.runScript(ctx, jl, job, "scripts/e2e_ensure_firewall.sh", serviceName); err != nil {
+	if err := h.runScript(ctx, jl, job, "scripts/aws_ensure_gpu_firewall.sh", serviceName); err != nil {
 		log.Printf("firewall hook warning: %v", err)
 	}
 
@@ -490,17 +535,25 @@ func (h *GPUPoolHandlers) handleDestroy(ctx context.Context, job *models.Job) er
 		case pool != nil && pool.NodeID != "":
 			// Mac bootstrap writes nodeId to Mongo via gpu-pool-sync; dev2 has no local state file.
 			log.Printf("destroy: Mongo nodeId=%s serviceTag=%s", pool.NodeID, serviceTag)
-			destroyErr = h.runScript(ctx, jl, job, "scripts/e2e_provision_node.sh", "destroy", pool.NodeID)
+			extraEnv := []string{}
+			if pool.Provider != "" {
+				extraEnv = append(extraEnv, "GPU_PROVIDER="+pool.Provider)
+			}
+			destroyErr = h.runScriptWithExtraEnv(ctx, jl, job, extraEnv, "scripts/gpu_provision_node.sh", "destroy", pool.NodeID)
 		case pool != nil && pool.PublicIP != "":
 			log.Printf("destroy: resolve by publicIp=%s serviceTag=%s", pool.PublicIP, serviceTag)
+			extraEnv := []string{"E2E_DESTROY_PUBLIC_IP=" + pool.PublicIP}
+			if pool.Provider != "" {
+				extraEnv = append(extraEnv, "GPU_PROVIDER="+pool.Provider)
+			}
 			destroyErr = h.runScriptWithExtraEnv(ctx, jl, job,
-				[]string{"E2E_DESTROY_PUBLIC_IP=" + pool.PublicIP},
-				"scripts/e2e_provision_node.sh", "destroy")
+				extraEnv,
+				"scripts/gpu_provision_node.sh", "destroy")
 		default:
-			destroyErr = h.runScript(ctx, jl, job, "scripts/e2e_bootstrap.sh", "--destroy")
+			destroyErr = h.runScript(ctx, jl, job, "scripts/gpu_bootstrap.sh", "--destroy")
 		}
 	} else {
-		destroyErr = h.runScript(ctx, jl, job, "scripts/e2e_bootstrap.sh", "--destroy")
+		destroyErr = h.runScript(ctx, jl, job, "scripts/gpu_bootstrap.sh", "--destroy")
 	}
 	if destroyErr != nil {
 		log.Printf("destroy script warning (continuing to reset pool state): %v", destroyErr)
@@ -515,6 +568,7 @@ func (h *GPUPoolHandlers) handleDestroy(ctx context.Context, job *models.Job) er
 			"drainReason":    "",
 			"readyAt":        nil,
 			"lastError":      "",
+			"lastErrorRaw":   "",
 		})
 		if err != nil {
 			return err
@@ -546,21 +600,6 @@ func (h *GPUPoolHandlers) handleGraceDestroy(ctx context.Context, job *models.Jo
 		return nil
 	}
 	return h.handleDestroy(ctx, job)
-}
-
-func (h *GPUPoolHandlers) handleHealthCheck(ctx context.Context, job *models.Job) error {
-	jl, err := h.openJobLog(job)
-	if err != nil {
-		log.Printf("job log unavailable: %v", err)
-	} else {
-		defer jl.close()
-	}
-
-	serviceName := h.payloadString(job, "serviceName")
-	if serviceName == "" {
-		serviceName = "sign_verify_vlm_gpu"
-	}
-	return h.runScript(ctx, jl, job, "scripts/e2e_ops.sh", "deploy", serviceName, "--api")
 }
 
 func (h *GPUPoolHandlers) handleMeterTick(ctx context.Context, job *models.Job) error {

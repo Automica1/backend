@@ -18,6 +18,8 @@ type GPUPoolService interface {
 	ListAdmin(ctx context.Context) ([]*models.GPUPool, error)
 	AdminShutdown(ctx context.Context, serviceTag string, immediate bool) (*models.GPUPool, error)
 	AdminCancelGrace(ctx context.Context, serviceTag string) (*models.GPUPool, error)
+	AdminAbortProvision(ctx context.Context, serviceTag string) error
+	AdminRetryProvision(ctx context.Context, serviceTag string) error
 	ReconcileIdleWarmPools(ctx context.Context) error
 	HandleMeterTick(ctx context.Context, serviceTag, userID string) error
 	HandleProvisionFailed(ctx context.Context, serviceTag string) error
@@ -29,11 +31,12 @@ type gpuPoolService struct {
 	poolRepo   repository.GPUPoolRepository
 	jobSvc     JobService
 	creditsSvc CreditsService
+	policySvc  GPUProvisionConfigService
 	cfg        *config.Config
 }
 
-func NewGPUPoolService(poolRepo repository.GPUPoolRepository, jobSvc JobService, creditsSvc CreditsService, cfg *config.Config) GPUPoolService {
-	return &gpuPoolService{poolRepo: poolRepo, jobSvc: jobSvc, creditsSvc: creditsSvc, cfg: cfg}
+func NewGPUPoolService(poolRepo repository.GPUPoolRepository, jobSvc JobService, creditsSvc CreditsService, policySvc GPUProvisionConfigService, cfg *config.Config) GPUPoolService {
+	return &gpuPoolService{poolRepo: poolRepo, jobSvc: jobSvc, creditsSvc: creditsSvc, policySvc: policySvc, cfg: cfg}
 }
 
 func (s *gpuPoolService) resolveServiceName(serviceTag string) (string, error) {
@@ -56,35 +59,26 @@ func (s *gpuPoolService) graceDestroyKey(serviceTag string) string {
 	return fmt.Sprintf("gpu-pool:%s:grace_destroy", serviceTag)
 }
 
-func (s *gpuPoolService) gracePeriod() time.Duration {
-	minutes := s.cfg.Worker.GracePeriodMin
-	if minutes <= 0 {
-		minutes = 5
+func (s *gpuPoolService) gracePeriodForPool(ctx context.Context, pool *models.GPUPool) time.Duration {
+	if pool == nil {
+		return s.gracePeriodFor(ctx, "")
 	}
-	return time.Duration(minutes) * time.Minute
+	return s.gracePeriodFor(ctx, pool.ServiceTag)
 }
 
-func (s *gpuPoolService) gracePeriodSec() int {
-	sec := int(s.gracePeriod().Seconds())
-	if sec <= 0 {
-		return 300
-	}
-	return sec
-}
-
-func (s *gpuPoolService) destroyAtForPool(pool *models.GPUPool) *time.Time {
+func (s *gpuPoolService) destroyAtForPool(ctx context.Context, pool *models.GPUPool) *time.Time {
 	if pool == nil || pool.State != models.GPUPoolStateDraining || !pool.HasScheduledGraceDestroy() {
 		return nil
 	}
 	if pool.DrainStartedAt == nil {
 		return nil
 	}
-	t := pool.DrainStartedAt.Add(s.gracePeriod())
+	t := pool.DrainStartedAt.Add(s.gracePeriodForPool(ctx, pool))
 	return &t
 }
 
 func (s *gpuPoolService) enqueueGraceDestroy(ctx context.Context, serviceTag, serviceName string) error {
-	runAfter := time.Now().UTC().Add(s.gracePeriod())
+	runAfter := time.Now().UTC().Add(s.gracePeriodFor(ctx, serviceTag))
 	_, err := s.jobSvc.Enqueue(ctx, models.JobTypeGPUPoolGraceDestroy, EnqueueJobOptions{
 		IdempotencyKey: s.graceDestroyKey(serviceTag),
 		RunAfter:       runAfter,
@@ -92,7 +86,7 @@ func (s *gpuPoolService) enqueueGraceDestroy(ctx context.Context, serviceTag, se
 			"serviceTag":  serviceTag,
 			"serviceName": serviceName,
 		},
-		MaxAttempts: 3,
+		MaxAttempts: s.destroyMaxAttempts(ctx, serviceTag),
 	})
 	if err != nil {
 		if appErr, ok := err.(*apperrors.AppError); ok && appErr.Type == apperrors.ErrValidation {
@@ -231,7 +225,7 @@ func (s *gpuPoolService) enqueueDestroy(ctx context.Context, serviceTag, service
 			"serviceTag":  serviceTag,
 			"serviceName": serviceName,
 		},
-		MaxAttempts: 3,
+		MaxAttempts: s.destroyMaxAttempts(ctx, serviceTag),
 	})
 	if err == nil {
 		return nil
@@ -257,13 +251,12 @@ func (s *gpuPoolService) adminAbortPoolNoNode(ctx context.Context, serviceTag st
 	_, _ = s.jobSvc.CancelPendingByIdempotencyKey(ctx, s.provisionKey(serviceTag))
 	_, _ = s.jobSvc.CancelPendingByIdempotencyKey(ctx, s.graceDestroyKey(serviceTag))
 
-	if _, err := s.poolRepo.Update(ctx, serviceTag, map[string]any{
-		"state":          models.GPUPoolStateFailed,
-		"lastError":      SanitizeGPUPoolUserError("admin terminated before GPU was ready"),
-		"adminWarmHold":  false,
-		"drainReason":    "",
-		"drainStartedAt": nil,
-	}); err != nil {
+	failUpdate := s.poolErrorUpdate(ctx, serviceTag, "admin terminated before GPU was ready")
+	failUpdate["state"] = models.GPUPoolStateFailed
+	failUpdate["adminWarmHold"] = false
+	failUpdate["drainReason"] = ""
+	failUpdate["drainStartedAt"] = nil
+	if _, err := s.poolRepo.Update(ctx, serviceTag, failUpdate); err != nil {
 		return nil, err
 	}
 	_ = s.refundFailedPoolSessions(ctx, serviceTag)
@@ -271,6 +264,7 @@ func (s *gpuPoolService) adminAbortPoolNoNode(ctx context.Context, serviceTag st
 	return s.poolRepo.Update(ctx, serviceTag, map[string]any{
 		"state":            models.GPUPoolStateIdle,
 		"lastError":        "",
+		"lastErrorRaw":     "",
 		"refCount":         0,
 		"nodeId":           "",
 		"publicIp":         "",
@@ -286,7 +280,7 @@ func (s *gpuPoolService) enqueueProvision(ctx context.Context, serviceTag, servi
 			"serviceTag":  serviceTag,
 			"serviceName": serviceName,
 		},
-		MaxAttempts: 3,
+		MaxAttempts: s.provisionMaxAttempts(ctx, serviceTag),
 	})
 	if err != nil {
 		if appErr, ok := err.(*apperrors.AppError); ok && appErr.Type == apperrors.ErrValidation {
@@ -377,7 +371,7 @@ func (s *gpuPoolService) reconcileStuckProvision(ctx context.Context, pool *mode
 		if active {
 			return pool, nil
 		}
-		if s.poolInReconnectWindow(pool) {
+		if s.poolInReconnectWindow(ctx, pool) {
 			return pool, nil
 		}
 		update := map[string]any{
@@ -390,11 +384,7 @@ func (s *gpuPoolService) reconcileStuckProvision(ctx context.Context, pool *mode
 	}
 
 	age := time.Since(pool.UpdatedAt)
-
-	const (
-		noJobFailAfter  = 13 * time.Minute // worker E2E_WAIT 10m + stall 6m headroom
-		zombieFailAfter = 22 * time.Minute
-	)
+	noJobFailAfter, zombieFailAfter := s.stuckProvisionThresholds(ctx, pool.ServiceTag)
 	if active && age < zombieFailAfter {
 		return pool, nil
 	}
@@ -402,10 +392,9 @@ func (s *gpuPoolService) reconcileStuckProvision(ctx context.Context, pool *mode
 		return pool, nil
 	}
 
-	updated, err := s.poolRepo.Update(ctx, pool.ServiceTag, map[string]any{
-		"state":     models.GPUPoolStateFailed,
-		"lastError": SanitizeGPUPoolUserError("provision stalled beyond time limit"),
-	})
+	stuckUpdate := s.poolErrorUpdate(ctx, pool.ServiceTag, "provision stalled beyond time limit")
+	stuckUpdate["state"] = models.GPUPoolStateFailed
+	updated, err := s.poolRepo.Update(ctx, pool.ServiceTag, stuckUpdate)
 	if err != nil {
 		return pool, err
 	}
@@ -432,7 +421,7 @@ func (s *gpuPoolService) OnProvisionSkippedNoSessions(ctx context.Context, servi
 	if pool.State != models.GPUPoolStateProvisioning {
 		return nil
 	}
-	if s.poolInReconnectWindow(pool) {
+	if s.poolInReconnectWindow(ctx, pool) {
 		return nil
 	}
 	active, err := s.jobSvc.HasActiveByIdempotencyKey(ctx, s.provisionKey(serviceTag))
@@ -460,7 +449,7 @@ func gpuPoolReattachedSession(userActive bool, hasActiveSession bool, freshSessi
 	return userActive && hasActiveSession && !freshSessionStart
 }
 
-func (s *gpuPoolService) toStatus(pool *models.GPUPool, userID string, opts ...gpuPoolStatusOpts) *models.GPUPoolStatusResponse {
+func (s *gpuPoolService) toStatus(ctx context.Context, pool *models.GPUPool, userID string, opts ...gpuPoolStatusOpts) *models.GPUPoolStatusResponse {
 	var o gpuPoolStatusOpts
 	if len(opts) > 0 {
 		o = opts[0]
@@ -477,25 +466,17 @@ func (s *gpuPoolService) toStatus(pool *models.GPUPool, userID string, opts ...g
 	creditsCharged, billingActive, endReason := s.sessionStatusFields(pool, userID)
 	startupCharged, gpuTimeCharged := 0, 0
 	if activeSess != nil {
-		startupCharged = activeSess.CreditsStartupCharged
-		if startupCharged > creditsCharged {
-			startupCharged = creditsCharged
-		}
-		gpuTimeCharged = creditsCharged - startupCharged
+		startupCharged, _, gpuTimeCharged = sessionCreditBreakdown(activeSess)
 	} else if stopped := lastStoppedSession(pool, userID); stopped != nil {
-		startupCharged = stopped.CreditsStartupCharged
-		if startupCharged > creditsCharged {
-			startupCharged = creditsCharged
-		}
-		gpuTimeCharged = creditsCharged - startupCharged
+		startupCharged, _, gpuTimeCharged = sessionCreditBreakdown(stopped)
 	}
 	interval := s.meterInterval()
-	lastError := SanitizeGPUPoolUserError(pool.LastError)
+	lastError := s.sanitizePoolError(ctx, pool.ServiceTag, pool.LastError)
 	if !userActive && pool.RefCount == 0 &&
 		(pool.State == models.GPUPoolStateFailed || pool.State == models.GPUPoolStateIdle) {
 		lastError = ""
 	}
-	reconnectEligible, reconnectUntil, _ := s.reconnectWindow(pool, userID)
+	reconnectEligible, reconnectUntil, _ := s.reconnectWindow(ctx, pool, userID)
 	return &models.GPUPoolStatusResponse{
 		ServiceTag:            pool.ServiceTag,
 		ServiceName:           pool.ServiceName,
@@ -506,8 +487,8 @@ func (s *gpuPoolService) toStatus(pool *models.GPUPool, userID string, opts ...g
 		ReadyAt:               pool.ReadyAt,
 		DrainStartedAt:        pool.DrainStartedAt,
 		DrainReason:           pool.DrainReason,
-		DestroyAt:             s.destroyAtForPool(pool),
-		GracePeriodSec:        s.gracePeriodSec(),
+		DestroyAt:             s.destroyAtForPool(ctx, pool),
+		GracePeriodSec:        s.gracePeriodSecFor(ctx, pool.ServiceTag),
 		LastError:             lastError,
 		PollURL:               fmt.Sprintf("/api/v1/gpu-pool/status?serviceTag=%s", pool.ServiceTag),
 		UserActive:            userActive,
@@ -535,6 +516,10 @@ func (s *gpuPoolService) Start(ctx context.Context, userID, serviceTag string) (
 	serviceName, err := s.resolveServiceName(serviceTag)
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg := s.policyFor(ctx, serviceTag); cfg != nil && cfg.BlocksNewSessions() {
+		return nil, apperrors.NewAppError(apperrors.ErrValidation, 503, cfg.MaintenanceUserMessage())
 	}
 
 	if _, err := s.poolRepo.EnsurePool(ctx, serviceTag, serviceName); err != nil {
@@ -634,7 +619,7 @@ func (s *gpuPoolService) Start(ctx context.Context, userID, serviceTag string) (
 	if err != nil {
 		return nil, err
 	}
-	return s.toStatus(updated, userID, gpuPoolStatusOpts{freshSessionStart: !alreadyActive}), nil
+	return s.toStatus(ctx, updated, userID, gpuPoolStatusOpts{freshSessionStart: !alreadyActive}), nil
 }
 
 func (s *gpuPoolService) Stop(ctx context.Context, userID, serviceTag string) (*models.GPUPoolStatusResponse, error) {
@@ -675,7 +660,7 @@ func (s *gpuPoolService) Stop(ctx context.Context, userID, serviceTag string) (*
 		}
 	}
 
-	return s.toStatus(pool, userID), nil
+	return s.toStatus(ctx, pool, userID), nil
 }
 
 // cancelScheduledGrace clears a grace teardown and returns the pool to ready (user Start or admin override).
@@ -861,7 +846,7 @@ func (s *gpuPoolService) GetStatus(ctx context.Context, userID, serviceTag strin
 	if err != nil {
 		return nil, err
 	}
-	return s.toStatus(reconciled, userID), nil
+	return s.toStatus(ctx, reconciled, userID), nil
 }
 
 func (s *gpuPoolService) ListAdmin(ctx context.Context) ([]*models.GPUPool, error) {
@@ -884,4 +869,48 @@ func (s *gpuPoolService) ListAdmin(ctx context.Context) ([]*models.GPUPool, erro
 		pools[i] = reconciled
 	}
 	return pools, nil
+}
+
+func (s *gpuPoolService) AdminAbortProvision(ctx context.Context, serviceTag string) error {
+	serviceName, err := s.resolveServiceName(serviceTag)
+	if err != nil {
+		return err
+	}
+	return s.abortProvisionAndDestroy(ctx, serviceTag, serviceName)
+}
+
+func (s *gpuPoolService) AdminRetryProvision(ctx context.Context, serviceTag string) error {
+	serviceName, err := s.resolveServiceName(serviceTag)
+	if err != nil {
+		return err
+	}
+	active, err := s.jobSvc.HasActiveByIdempotencyKey(ctx, s.provisionKey(serviceTag))
+	if err != nil {
+		return err
+	}
+	if active {
+		return apperrors.NewAppError(apperrors.ErrValidation, 409, "provision job already active")
+	}
+	pool, err := s.poolRepo.GetByServiceTag(ctx, serviceTag)
+	if err != nil {
+		return err
+	}
+	if pool == nil {
+		return apperrors.NewAppError(apperrors.ErrNotFound, 404, "gpu pool not found")
+	}
+	if pool.State != models.GPUPoolStateFailed && pool.State != models.GPUPoolStateIdle {
+		return apperrors.NewAppError(apperrors.ErrValidation, 400, "pool must be idle or failed to retry provision")
+	}
+	if pool.State == models.GPUPoolStateIdle && pool.LastError == "" && pool.LastErrorRaw == "" {
+		return apperrors.NewAppError(apperrors.ErrValidation, 400, "pool is not in a failed state")
+	}
+	_, _ = s.jobSvc.MarkDeadByIdempotencyKey(ctx, s.provisionKey(serviceTag), "admin retry provision")
+	if _, err := s.poolRepo.Update(ctx, serviceTag, map[string]any{
+		"state":        models.GPUPoolStateIdle,
+		"lastError":    "",
+		"lastErrorRaw": "",
+	}); err != nil {
+		return err
+	}
+	return s.enqueueProvision(ctx, serviceTag, serviceName)
 }

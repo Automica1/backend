@@ -13,19 +13,18 @@ func (s *gpuPoolService) reconnectDestroyKey(serviceTag string) string {
 }
 
 // poolReconnectUntil is the latest reconnect-until among recent stopped sessions (any user).
-func (s *gpuPoolService) poolReconnectUntil(pool *models.GPUPool) (*time.Time, bool) {
+func (s *gpuPoolService) poolReconnectUntil(ctx context.Context, pool *models.GPUPool) (*time.Time, bool) {
 	if pool == nil {
 		return nil, false
 	}
 	now := time.Now().UTC()
-	cooldown := s.reconnectCooldown()
 	var latest *time.Time
 	for i := range pool.Sessions {
 		sess := &pool.Sessions[i]
 		if sess.StoppedAt == nil || sess.CreditsStartupCharged <= 0 || sess.StartupRefunded {
 			continue
 		}
-		until := sess.StoppedAt.Add(cooldown)
+		until := sess.StoppedAt.Add(s.reconnectCooldownFor(ctx, pool.ServiceTag))
 		if now.Before(until) {
 			if latest == nil || until.After(*latest) {
 				t := until
@@ -36,8 +35,8 @@ func (s *gpuPoolService) poolReconnectUntil(pool *models.GPUPool) (*time.Time, b
 	return latest, latest != nil
 }
 
-func (s *gpuPoolService) poolInReconnectWindow(pool *models.GPUPool) bool {
-	_, ok := s.poolReconnectUntil(pool)
+func (s *gpuPoolService) poolInReconnectWindow(ctx context.Context, pool *models.GPUPool) bool {
+	_, ok := s.poolReconnectUntil(ctx, pool)
 	return ok
 }
 
@@ -50,7 +49,7 @@ func (s *gpuPoolService) scheduleReconnectDestroy(ctx context.Context, serviceTa
 			"serviceTag":  serviceTag,
 			"serviceName": serviceName,
 		},
-		MaxAttempts: 3,
+		MaxAttempts: s.destroyMaxAttempts(ctx, serviceTag),
 	})
 	if err == nil {
 		return nil
@@ -79,7 +78,7 @@ func (s *gpuPoolService) afterEarlyStopDuringProvision(ctx context.Context, pool
 		return nil
 	}
 	if pool.TeardownOnUserStop() {
-		until, inWindow := s.poolReconnectUntil(pool)
+		until, inWindow := s.poolReconnectUntil(ctx, pool)
 		if inWindow && until != nil {
 			return s.scheduleReconnectDestroy(ctx, pool.ServiceTag, serviceName, *until)
 		}
@@ -107,7 +106,7 @@ func (s *gpuPoolService) HandleProvisionNoSessions(ctx context.Context, serviceT
 				"readyAt": nil,
 			})
 		}
-		until, inWindow := s.poolReconnectUntil(pool)
+		until, inWindow := s.poolReconnectUntil(ctx, pool)
 		if inWindow && until != nil {
 			return false, s.scheduleReconnectDestroy(ctx, serviceTag, serviceName, *until)
 		}
@@ -118,7 +117,7 @@ func (s *gpuPoolService) HandleProvisionNoSessions(ctx context.Context, serviceT
 		return false, nil
 	}
 
-	until, inWindow := s.poolReconnectUntil(pool)
+	until, inWindow := s.poolReconnectUntil(ctx, pool)
 	if inWindow && until != nil {
 		_ = s.scheduleReconnectDestroy(ctx, serviceTag, serviceName, *until)
 		return true, nil

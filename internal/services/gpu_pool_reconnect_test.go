@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func TestReconnectWindowOrphanBoot(t *testing.T) {
 			},
 		},
 	}
-	eligible, until, skip := svc.reconnectWindow(pool, "user-1")
+	eligible, until, skip := svc.reconnectWindow(context.Background(), pool, "user-1")
 	if !eligible || !skip || until == nil {
 		t.Fatalf("expected reconnect window, got eligible=%v skip=%v until=%v", eligible, skip, until)
 	}
@@ -47,7 +48,7 @@ func TestReconnectWindowIdlePoolAfterDestroy(t *testing.T) {
 			},
 		},
 	}
-	eligible, until, skip := svc.reconnectWindow(pool, "user-1")
+	eligible, until, skip := svc.reconnectWindow(context.Background(), pool, "user-1")
 	if !eligible || !skip || until == nil {
 		t.Fatalf("expected reconnect after destroy (idle pool), got eligible=%v skip=%v until=%v", eligible, skip, until)
 	}
@@ -69,7 +70,7 @@ func TestReconnectWindowExpired(t *testing.T) {
 			},
 		},
 	}
-	eligible, _, skip := svc.reconnectWindow(pool, "user-1")
+	eligible, _, skip := svc.reconnectWindow(context.Background(), pool, "user-1")
 	if eligible || skip {
 		t.Fatalf("expected no reconnect after cooldown, got eligible=%v skip=%v", eligible, skip)
 	}

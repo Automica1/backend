@@ -29,6 +29,7 @@ type JobService interface {
 	HasRunningGPUPoolDestroy(ctx context.Context, serviceTag string) (bool, error)
 	HasActiveMeterTick(ctx context.Context, serviceTag, userID string) (bool, error)
 	CancelPendingMeterTicks(ctx context.Context, serviceTag, userID string) (int64, error)
+	MarkDeadByIdempotencyKey(ctx context.Context, key, reason string) (int64, error)
 }
 
 type jobService struct {
@@ -108,4 +109,8 @@ func (s *jobService) HasActiveMeterTick(ctx context.Context, serviceTag, userID 
 
 func (s *jobService) CancelPendingMeterTicks(ctx context.Context, serviceTag, userID string) (int64, error) {
 	return s.repo.CancelPendingMeterTicks(ctx, serviceTag, userID)
+}
+
+func (s *jobService) MarkDeadByIdempotencyKey(ctx context.Context, key, reason string) (int64, error) {
+	return s.repo.MarkDeadByIdempotencyKey(ctx, key, reason)
 }

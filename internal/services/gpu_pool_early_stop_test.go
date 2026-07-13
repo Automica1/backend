@@ -57,6 +57,10 @@ func (r *recordingJobService) CancelPendingMeterTicks(ctx context.Context, servi
 	return 0, nil
 }
 
+func (r *recordingJobService) MarkDeadByIdempotencyKey(ctx context.Context, key, reason string) (int64, error) {
+	return 0, nil
+}
+
 func TestAbortProvisionAndDestroy(t *testing.T) {
 	t.Parallel()
 	jobs := &recordingJobService{}

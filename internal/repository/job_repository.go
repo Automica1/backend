@@ -28,9 +28,11 @@ type JobRepository interface {
 	CancelPendingByIdempotencyKey(ctx context.Context, key string) (int64, error)
 	CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error)
 	MarkCancelled(ctx context.Context, id primitive.ObjectID) error
+	MarkDeadByIdempotencyKey(ctx context.Context, key, reason string) (int64, error)
 	HasActiveMeterTick(ctx context.Context, serviceTag, userID string) (bool, error)
 	CancelPendingMeterTicks(ctx context.Context, serviceTag, userID string) (int64, error)
 	GetByID(ctx context.Context, id primitive.ObjectID) (*models.Job, error)
+	ListGPUByServiceTag(ctx context.Context, serviceTag string, limit int) ([]*models.Job, error)
 }
 
 type jobRepository struct {
@@ -372,4 +374,66 @@ func (r *jobRepository) GetByID(ctx context.Context, id primitive.ObjectID) (*mo
 		return nil, err
 	}
 	return &job, nil
+}
+
+func (r *jobRepository) ListGPUByServiceTag(ctx context.Context, serviceTag string, limit int) ([]*models.Job, error) {
+	if serviceTag == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	filter := bson.M{
+		"type": bson.M{"$in": []string{
+			models.JobTypeGPUPoolProvision,
+			models.JobTypeGPUPoolDestroy,
+			models.JobTypeGPUPoolGraceDestroy,
+		}},
+		"payload.serviceTag": serviceTag,
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetLimit(int64(limit))
+	cur, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var jobs []*models.Job
+	for cur.Next(ctx) {
+		var job models.Job
+		if err := cur.Decode(&job); err != nil {
+			return nil, err
+		}
+		j := job
+		jobs = append(jobs, &j)
+	}
+	return jobs, cur.Err()
+}
+
+func (r *jobRepository) MarkDeadByIdempotencyKey(ctx context.Context, key, reason string) (int64, error) {
+	if key == "" {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	result, err := r.collection.UpdateMany(ctx, bson.M{
+		"idempotencyKey": key,
+		"status": bson.M{"$in": []models.JobStatus{
+			models.JobStatusPending,
+			models.JobStatusRunning,
+			models.JobStatusFailed,
+		}},
+	}, bson.M{
+		"$set": bson.M{
+			"status":      models.JobStatusDead,
+			"lastError":   reason,
+			"completedAt": now,
+			"lockedBy":    "",
+			"lockedAt":    nil,
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ModifiedCount, nil
 }

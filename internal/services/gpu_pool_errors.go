@@ -1,13 +1,20 @@
 package services
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // SanitizeGPUPoolUserError maps internal worker/script failures to short user-facing text.
-// Full stderr stays in worker logs only (logs/worker/*.log on dev2).
-func SanitizeGPUPoolUserError(raw string) string {
+// hintMin controls the "try again in X minutes" copy (from pool policy).
+func SanitizeGPUPoolUserError(raw string, hintMin int) string {
 	if raw == "" {
 		return ""
 	}
+	if hintMin <= 0 {
+		hintMin = 15
+	}
+	retryHint := fmt.Sprintf("Try again in about %d minutes.", hintMin)
 	lower := strings.ToLower(raw)
 
 	switch {
@@ -21,43 +28,48 @@ func SanitizeGPUPoolUserError(raw string) string {
 		strings.Contains(lower, "precondition failed"):
 		return "The test resource was still shutting down from a previous run. Please wait a minute and try Start session again."
 
+	case strings.Contains(lower, "maintenance"),
+		strings.Contains(lower, "temporarily unavailable"):
+		return raw
+
 	case strings.Contains(lower, "failed recreate"),
 		strings.Contains(lower, "e2e node") && strings.Contains(lower, "failed"),
 		strings.Contains(lower, "stalled in status"),
 		strings.Contains(lower, "provider error"),
 		strings.Contains(lower, "provision stalled"),
 		strings.Contains(lower, "gpu plan temporarily not available"):
-		return "All test resources are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. " + retryHint
 
 	case strings.Contains(lower, "timed out"),
 		strings.Contains(lower, "stalled"),
 		strings.Contains(lower, "ssh not reachable"),
 		strings.Contains(lower, "wait-ssh"):
-		return "All test resources are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. " + retryHint
 
 	case strings.Contains(lower, "e2e api"),
 		strings.Contains(lower, "503"),
 		strings.Contains(lower, "502"),
 		strings.Contains(lower, "504"):
-		return "All test resources are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. " + retryHint
 
 	case strings.Contains(lower, "gateway"),
 		strings.Contains(lower, "beta-seed"):
-		return "All test resources are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. " + retryHint
 
 	default:
-		return "All test resources are busy right now. Try again in about 15 minutes."
+		return "All test resources are busy right now. " + retryHint
 	}
 }
 
-// IsTerminalProvisionError is true when retrying the same E2E create/wait is unlikely to help.
+// IsTerminalProvisionError reports errors that should not be retried (provider gave up).
 func IsTerminalProvisionError(raw string) bool {
-	if raw == "" {
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.Contains(lower, "failed recreate"),
+		strings.Contains(lower, "stalled in status"),
+		strings.Contains(lower, "gpu plan temporarily not available"):
+		return true
+	default:
 		return false
 	}
-	lower := strings.ToLower(raw)
-	return strings.Contains(lower, "failed recreate") ||
-		strings.Contains(lower, "e2e node") && strings.Contains(lower, "failed") ||
-		strings.Contains(lower, "stalled in status") ||
-		strings.Contains(lower, "provider error")
 }

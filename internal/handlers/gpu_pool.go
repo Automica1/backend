@@ -3,19 +3,42 @@ package handlers
 import (
 	"net/http"
 
+	"chi-mongo-backend/internal/config"
 	"chi-mongo-backend/internal/middleware"
+	"chi-mongo-backend/internal/models"
+	"chi-mongo-backend/internal/repository"
 	"chi-mongo-backend/internal/services"
 	apperrors "chi-mongo-backend/pkg/errors"
 	"chi-mongo-backend/pkg/utils"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type GPUPoolHandler struct {
-	gpuPoolService services.GPUPoolService
-	userService    services.UserService
+	gpuPoolService         services.GPUPoolService
+	provisionConfigService services.GPUProvisionConfigService
+	userService            services.UserService
+	jobRepo                repository.JobRepository
+	jobSvc                 services.JobService
+	cfg                    *config.Config
 }
 
-func NewGPUPoolHandler(gpuPoolService services.GPUPoolService, userService services.UserService) *GPUPoolHandler {
-	return &GPUPoolHandler{gpuPoolService: gpuPoolService, userService: userService}
+func NewGPUPoolHandler(
+	gpuPoolService services.GPUPoolService,
+	provisionConfigService services.GPUProvisionConfigService,
+	userService services.UserService,
+	jobRepo repository.JobRepository,
+	jobSvc services.JobService,
+	cfg *config.Config,
+) *GPUPoolHandler {
+	return &GPUPoolHandler{
+		gpuPoolService:         gpuPoolService,
+		provisionConfigService: provisionConfigService,
+		userService:            userService,
+		jobRepo:                jobRepo,
+		jobSvc:                 jobSvc,
+		cfg:                    cfg,
+	}
 }
 
 func (h *GPUPoolHandler) resolveUserID(r *http.Request) (string, error) {
@@ -101,7 +124,17 @@ func (h *GPUPoolHandler) ListAdmin(w http.ResponseWriter, r *http.Request) {
 		utils.SendErrorResponse(w, err)
 		return
 	}
-	utils.SendJSONResponse(w, http.StatusOK, map[string]any{"pools": pools})
+	entries := make([]models.GPUPoolAdminEntry, 0, len(pools))
+	for _, pool := range pools {
+		if pool == nil {
+			continue
+		}
+		entries = append(entries, h.enrichAdminPool(r.Context(), pool))
+	}
+	utils.SendJSONResponse(w, http.StatusOK, map[string]any{
+		"pools":   entries,
+		"billing": h.billingInfo(),
+	})
 }
 
 func (h *GPUPoolHandler) AdminShutdown(w http.ResponseWriter, r *http.Request) {
@@ -142,4 +175,52 @@ func (h *GPUPoolHandler) AdminCancelGrace(w http.ResponseWriter, r *http.Request
 		return
 	}
 	utils.SendJSONResponse(w, http.StatusOK, pool)
+}
+
+func (h *GPUPoolHandler) GetProvisionConfig(w http.ResponseWriter, r *http.Request) {
+	serviceTag := r.URL.Query().Get("serviceTag")
+	if serviceTag == "" {
+		serviceTag = chi.URLParam(r, "serviceTag")
+	}
+	if serviceTag == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, http.StatusBadRequest, "serviceTag is required"))
+		return
+	}
+	cfg, err := h.provisionConfigService.GetOrDefault(r.Context(), serviceTag)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, map[string]any{
+		"policy":        cfg,
+		"policySummary": h.provisionConfigService.EffectiveSummary(cfg),
+	})
+}
+
+func (h *GPUPoolHandler) PutProvisionConfig(w http.ResponseWriter, r *http.Request) {
+	serviceTag := chi.URLParam(r, "serviceTag")
+	var cfg models.GPUProvisionConfig
+	if err := utils.DecodeJSONBody(r, &cfg); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	if serviceTag != "" {
+		cfg.ServiceTag = serviceTag
+	}
+	if cfg.ServiceTag == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, http.StatusBadRequest, "serviceTag is required"))
+		return
+	}
+	if email, ok := middleware.GetEmailFromContext(r.Context()); ok {
+		cfg.UpdatedBy = email
+	}
+	saved, err := h.provisionConfigService.Upsert(r.Context(), &cfg)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, map[string]any{
+		"policy":        saved,
+		"policySummary": h.provisionConfigService.EffectiveSummary(saved),
+	})
 }

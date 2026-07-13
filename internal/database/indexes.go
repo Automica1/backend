@@ -50,6 +50,11 @@ func (m *MongoDB) CreateIndexes(ctx context.Context) error {
 		return err
 	}
 
+	gpuProvisionConfigsCollection := m.GetCollection("gpu_provision_configs")
+	if err := m.createGPUProvisionConfigsIndexes(ctx, gpuProvisionConfigsCollection); err != nil {
+		return err
+	}
+
 	log.Println("✅ Database indexes created successfully")
 	return nil
 }
@@ -207,5 +212,22 @@ func (m *MongoDB) createGPUPoolsIndexes(ctx context.Context, collection *mongo.C
 	}
 
 	log.Println("✅ GPU pools collection indexes created")
+	return nil
+}
+
+func (m *MongoDB) createGPUProvisionConfigsIndexes(ctx context.Context, collection *mongo.Collection) error {
+	indexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "serviceTag", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+	}
+
+	_, err := collection.Indexes().CreateMany(ctx, indexes)
+	if err != nil {
+		return err
+	}
+
+	log.Println("✅ GPU provision configs collection indexes created")
 	return nil
 }

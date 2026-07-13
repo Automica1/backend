@@ -4,7 +4,7 @@ import "testing"
 
 func TestSanitizeGPUPoolUserError(t *testing.T) {
 	raw := "scripts/e2e_bootstrap.sh: exit status 1\nstderr: /usr/bin/python3: No module named pip"
-	got := SanitizeGPUPoolUserError(raw)
+	got := SanitizeGPUPoolUserError(raw, 15)
 	if got == raw || got == "" {
 		t.Fatalf("expected sanitized message, got %q", got)
 	}

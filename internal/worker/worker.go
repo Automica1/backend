@@ -71,12 +71,6 @@ func (w *Worker) Run(ctx context.Context) {
 
 	log.Printf("automica-worker started id=%s poll=%s", w.workerID, poll)
 
-	if count, err := w.repo.ReleaseAllRunningLocks(ctx, "worker restarted: reclaimed orphaned running job"); err != nil {
-		log.Printf("recover orphaned running jobs error: %v", err)
-	} else if count > 0 {
-		log.Printf("reclaimed %d orphaned running job(s) on startup", count)
-	}
-
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
