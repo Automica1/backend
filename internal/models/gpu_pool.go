@@ -19,16 +19,16 @@ const (
 // GPUPoolSession tracks one user's testing window on a shared GPU pool.
 // Stop Testing ends the session; user-owned nodes get grace teardown when refCount hits 0.
 type GPUPoolSession struct {
-	UserID           string     `bson:"userId" json:"userId"`
-	StartedAt        time.Time  `bson:"startedAt" json:"startedAt"`
-	StoppedAt        *time.Time `bson:"stoppedAt,omitempty" json:"stoppedAt,omitempty"`
-	CreditsMeterID   string     `bson:"creditsMeterId,omitempty" json:"creditsMeterId,omitempty"`
-	BillingStartedAt *time.Time `bson:"billingStartedAt,omitempty" json:"billingStartedAt,omitempty"`
-	CreditsCharged         int        `bson:"creditsCharged" json:"creditsCharged"`
-	CreditsStartupCharged  int        `bson:"creditsStartupCharged,omitempty" json:"creditsStartupCharged,omitempty"`
-	StartupRefunded        bool       `bson:"startupRefunded,omitempty" json:"startupRefunded,omitempty"`
-	LastMeteredAt          *time.Time `bson:"lastMeteredAt,omitempty" json:"lastMeteredAt,omitempty"`
-	EndReason              string     `bson:"endReason,omitempty" json:"endReason,omitempty"`
+	UserID                string     `bson:"userId" json:"userId"`
+	StartedAt             time.Time  `bson:"startedAt" json:"startedAt"`
+	StoppedAt             *time.Time `bson:"stoppedAt,omitempty" json:"stoppedAt,omitempty"`
+	CreditsMeterID        string     `bson:"creditsMeterId,omitempty" json:"creditsMeterId,omitempty"`
+	BillingStartedAt      *time.Time `bson:"billingStartedAt,omitempty" json:"billingStartedAt,omitempty"`
+	CreditsCharged        int        `bson:"creditsCharged" json:"creditsCharged"`
+	CreditsStartupCharged int        `bson:"creditsStartupCharged,omitempty" json:"creditsStartupCharged,omitempty"`
+	StartupRefunded       bool       `bson:"startupRefunded,omitempty" json:"startupRefunded,omitempty"`
+	LastMeteredAt         *time.Time `bson:"lastMeteredAt,omitempty" json:"lastMeteredAt,omitempty"`
+	EndReason             string     `bson:"endReason,omitempty" json:"endReason,omitempty"`
 }
 
 const GPUPoolSessionEndInsufficientCredits = "insufficient_credits"
@@ -58,15 +58,18 @@ func (p *GPUPool) TeardownOnUserStop() bool {
 type GPUPoolDrainReason string
 
 const (
-	GPUPoolDrainReasonUserGrace  GPUPoolDrainReason = "user_grace"
-	GPUPoolDrainReasonAdminGrace GPUPoolDrainReason = "admin_grace"
+	GPUPoolDrainReasonUserGrace       GPUPoolDrainReason = "user_grace"
+	GPUPoolDrainReasonAdminGrace      GPUPoolDrainReason = "admin_grace"
+	GPUPoolDrainReasonFailedBootstrap GPUPoolDrainReason = "failed_bootstrap"
 )
 
 func (p *GPUPool) HasScheduledGraceDestroy() bool {
 	if p == nil {
 		return false
 	}
-	return p.DrainReason == GPUPoolDrainReasonUserGrace || p.DrainReason == GPUPoolDrainReasonAdminGrace
+	return p.DrainReason == GPUPoolDrainReasonUserGrace ||
+		p.DrainReason == GPUPoolDrainReasonAdminGrace ||
+		p.DrainReason == GPUPoolDrainReasonFailedBootstrap
 }
 
 type GPUPool struct {
@@ -86,6 +89,7 @@ type GPUPool struct {
 	DeployVersion    string             `bson:"deployVersion,omitempty" json:"deployVersion,omitempty"`
 	ReadyAt          *time.Time         `bson:"readyAt,omitempty" json:"readyAt,omitempty"`
 	DrainStartedAt   *time.Time         `bson:"drainStartedAt,omitempty" json:"drainStartedAt,omitempty"`
+	DestroyAt        *time.Time         `bson:"destroyAt,omitempty" json:"destroyAt,omitempty"`
 	DrainReason      GPUPoolDrainReason `bson:"drainReason,omitempty" json:"drainReason,omitempty"`
 	AdminWarmHold    bool               `bson:"adminWarmHold,omitempty" json:"adminWarmHold,omitempty"`
 	Sessions         []GPUPoolSession   `bson:"sessions" json:"sessions"`
@@ -135,6 +139,47 @@ type GPUPoolSupportView struct {
 	Sessions         []GPUPoolSupportSessionView `json:"sessions,omitempty"`
 }
 
+type GPUPoolRecoveryNode struct {
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	Status   string `json:"status,omitempty"`
+	PublicIP string `json:"publicIp,omitempty"`
+}
+
+type GPUPoolRecoveryReport struct {
+	ServiceTag        string                `json:"serviceTag"`
+	State             GPUPoolState          `json:"state"`
+	Provider          string                `json:"provider,omitempty"`
+	ProviderLabel     string                `json:"providerLabel,omitempty"`
+	SSHReachable      bool                  `json:"sshReachable"`
+	ProviderNodeCount int                   `json:"providerNodeCount"`
+	ProviderNodes     []GPUPoolRecoveryNode `json:"providerNodes,omitempty"`
+	Action            string                `json:"action"`
+	Recovered         bool                  `json:"recovered"`
+	Message           string                `json:"message,omitempty"`
+	Notes             []string              `json:"notes,omitempty"`
+	ProbedAt          string                `json:"probedAt"`
+	Pool              *GPUPool              `json:"pool,omitempty"`
+}
+
+// GPUPoolInventory is live provider inventory (AWS/E2E list-nodes), not Mongo.
+type GPUPoolInventory struct {
+	ServiceTag        string                `json:"serviceTag"`
+	Provider          string                `json:"provider"`
+	ProviderLabel     string                `json:"providerLabel"`
+	ProviderNodeCount int                   `json:"providerNodeCount"`
+	ProviderNodes     []GPUPoolRecoveryNode `json:"providerNodes"`
+	SSHHost           string                `json:"sshHost,omitempty"`
+	SSHReachable      bool                  `json:"sshReachable"`
+	MongoState        GPUPoolState          `json:"mongoState,omitempty"`
+	MongoNodeID       string                `json:"mongoNodeId,omitempty"`
+	MongoPublicIP     string                `json:"mongoPublicIp,omitempty"`
+	Source            string                `json:"source"` // "provider-list-nodes"
+	RawPreview        string                `json:"rawPreview,omitempty"`
+	Notes             []string              `json:"notes,omitempty"`
+	ProbedAt          string                `json:"probedAt"`
+}
+
 type GPUPoolStartRequest struct {
 	ServiceTag string `json:"serviceTag"`
 }
@@ -144,40 +189,61 @@ type GPUPoolStopRequest struct {
 }
 
 type GPUPoolStatusResponse struct {
-	ServiceTag           string       `json:"serviceTag"`
-	ServiceName          string       `json:"serviceName"`
-	State                GPUPoolState `json:"state"`
-	RefCount             int          `json:"refCount"`
-	PublicIP             string       `json:"publicIp,omitempty"`
-	NodeID               string       `json:"nodeId,omitempty"`
-	ReadyAt              *time.Time   `json:"readyAt,omitempty"`
-	DrainStartedAt       *time.Time           `json:"drainStartedAt,omitempty"`
-	DrainReason          GPUPoolDrainReason   `json:"drainReason,omitempty"`
-	DestroyAt            *time.Time           `json:"destroyAt,omitempty"`
-	GracePeriodSec       int                  `json:"gracePeriodSec,omitempty"`
-	LastError            string               `json:"lastError,omitempty"`
-	PollURL              string       `json:"pollUrl"`
-	UserActive           bool         `json:"userActive"`
-	CreditsChargedSession        int `json:"creditsChargedSession"`
-	CreditsStartupChargedSession int `json:"creditsStartupChargedSession"`
-	CreditsGpuTimeSession        int `json:"creditsGpuTimeSession"`
-	CreditsPerMinute             int `json:"creditsPerMinute"`
-	StartupCredits        int         `json:"startupCredits"`
-	MinCreditsToStart     int         `json:"minCreditsToStart"`
-	MeterIntervalSec      int         `json:"meterIntervalSec"`
-	NextMeterChargeAt     *time.Time  `json:"nextMeterChargeAt,omitempty"`
-	BillingActive         bool        `json:"billingActive"`
+	ServiceTag                   string             `json:"serviceTag"`
+	ServiceName                  string             `json:"serviceName"`
+	State                        GPUPoolState       `json:"state"`
+	RefCount                     int                `json:"refCount"`
+	PublicIP                     string             `json:"publicIp,omitempty"`
+	NodeID                       string             `json:"nodeId,omitempty"`
+	ReadyAt                      *time.Time         `json:"readyAt,omitempty"`
+	DrainStartedAt               *time.Time         `json:"drainStartedAt,omitempty"`
+	DrainReason                  GPUPoolDrainReason `json:"drainReason,omitempty"`
+	DestroyAt                    *time.Time         `json:"destroyAt,omitempty"`
+	GracePeriodSec               int                `json:"gracePeriodSec,omitempty"`
+	LastError                    string             `json:"lastError,omitempty"`
+	PollURL                      string             `json:"pollUrl"`
+	UserActive                   bool               `json:"userActive"`
+	CreditsChargedSession        int                `json:"creditsChargedSession"`
+	CreditsStartupChargedSession int                `json:"creditsStartupChargedSession"`
+	CreditsGpuTimeSession        int                `json:"creditsGpuTimeSession"`
+	CreditsPerMinute             int                `json:"creditsPerMinute"`
+	StartupCredits               int                `json:"startupCredits"`
+	MinCreditsToStart            int                `json:"minCreditsToStart"`
+	MeterIntervalSec             int                `json:"meterIntervalSec"`
+	NextMeterChargeAt            *time.Time         `json:"nextMeterChargeAt,omitempty"`
+	BillingActive                bool               `json:"billingActive"`
 	// ReattachedSession is true when the user already had an active session (page refresh,
 	// status poll, or idempotent Start). False on Start immediately after creating a new session.
-	ReattachedSession     bool        `json:"reattachedSession"`
-	SessionEndReason      string      `json:"sessionEndReason,omitempty"`
-	ReconnectEligible     bool        `json:"reconnectEligible"`
-	ReconnectUntil        *time.Time  `json:"reconnectUntil,omitempty"`
+	ReattachedSession bool       `json:"reattachedSession"`
+	SessionEndReason  string     `json:"sessionEndReason,omitempty"`
+	ReconnectEligible bool       `json:"reconnectEligible"`
+	ReconnectUntil    *time.Time `json:"reconnectUntil,omitempty"`
 }
+
+// Canonical GPU / beta tags for signature-verification.
+// vlm-gpu is infra-agnostic (E2E or AWS, GHCR or ECR). vlm-e2e-gpu is a legacy alias
+// kept so an already-warm E2E pool and old beta keys keep working during cutover.
+const (
+	VLMGPUServiceTag       = "vlm-gpu"
+	VLMGPUServiceTagLegacy = "vlm-e2e-gpu"
+)
 
 // ServiceTagToPipelineService maps beta gateway tags to pipeline service names.
 var ServiceTagToPipelineService = map[string]string{
-	"vlm-e2e-gpu": "sign_verify_vlm_gpu",
+	VLMGPUServiceTag:       "sign_verify_vlm_gpu",
+	VLMGPUServiceTagLegacy: "sign_verify_vlm_gpu",
+	OCRGPUServiceTag:       "ocr",
+}
+
+// CanonicalGPUServiceTag maps legacy GPU tags onto the current pool identity.
+// Pool documents and provision configs should be keyed by the canonical tag when
+// creating new pools; legacy lookups still resolve for Start Testing.
+func CanonicalGPUServiceTag(tag string) string {
+	tag = normalizeBetaServiceTag(tag)
+	if tag == VLMGPUServiceTagLegacy {
+		return VLMGPUServiceTag
+	}
+	return tag
 }
 
 // BetaServiceTagRequiresGPUPool is true when Try API must run gpu-pool start/stop for this beta tag.

@@ -9,7 +9,7 @@ import (
 
 func TestWorkerEnvMapsPolicyFields(t *testing.T) {
 	t.Parallel()
-	cfg := models.DefaultGPUProvisionConfig("vlm-e2e-gpu", "sign_verify_vlm_gpu")
+	cfg := models.DefaultGPUProvisionConfig("vlm-gpu", "sign_verify_vlm_gpu")
 	cfg.Timeouts.SSHReadyPrimarySec = 120
 	cfg.Timeouts.E2EWaitSec = 900
 	cfg.Retries.ReuseNodeOnRetry = false
@@ -21,6 +21,8 @@ func TestWorkerEnvMapsPolicyFields(t *testing.T) {
 		"E2E_WAIT_TIMEOUT_SEC=900",
 		"GPU_RETRY_REUSE_NODE=0",
 		"GPU_PROVISION_PRIMARY=e2e",
+		"GPU_SSH_HOST=e2e",
+		"GPU_PROVIDER=e2e",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("WorkerEnv missing %q in:\n%s", want, joined)
@@ -30,7 +32,7 @@ func TestWorkerEnvMapsPolicyFields(t *testing.T) {
 
 func TestEffectiveSummaryE2EPrimary(t *testing.T) {
 	t.Parallel()
-	cfg := models.DefaultGPUProvisionConfig("vlm-e2e-gpu", "sign_verify_vlm_gpu")
+	cfg := models.DefaultGPUProvisionConfig("vlm-gpu", "sign_verify_vlm_gpu")
 	svc := NewGPUProvisionConfigService(nil)
 	got := svc.EffectiveSummary(cfg)
 	if !strings.Contains(got, "E2E Networks") || !strings.Contains(got, "Delhi") {
@@ -40,7 +42,7 @@ func TestEffectiveSummaryE2EPrimary(t *testing.T) {
 
 func TestEffectiveSummaryAWSPrimary(t *testing.T) {
 	t.Parallel()
-	cfg := models.DefaultGPUProvisionConfig("vlm-e2e-gpu", "sign_verify_vlm_gpu")
+	cfg := models.DefaultGPUProvisionConfig("vlm-gpu", "sign_verify_vlm_gpu")
 	cfg.Infrastructure.PrimaryProvider = models.GPUProviderAWS
 	cfg.Infrastructure.FallbackProvider = models.GPUProviderName("none")
 	svc := NewGPUProvisionConfigService(nil)
@@ -52,7 +54,7 @@ func TestEffectiveSummaryAWSPrimary(t *testing.T) {
 
 func TestValidateStuckProvisionUsesPrimaryTimeout(t *testing.T) {
 	t.Parallel()
-	cfg := models.DefaultGPUProvisionConfig("vlm-e2e-gpu", "sign_verify_vlm_gpu")
+	cfg := models.DefaultGPUProvisionConfig("vlm-gpu", "sign_verify_vlm_gpu")
 	cfg.Infrastructure.PrimaryProvider = models.GPUProviderAWS
 	cfg.Infrastructure.FallbackProvider = models.GPUProviderName("none")
 	cfg.Timeouts.SSHReadyPrimarySec = 600
@@ -66,7 +68,7 @@ func TestValidateStuckProvisionUsesPrimaryTimeout(t *testing.T) {
 
 func TestMinStuckProvisionNoJobMinAWS(t *testing.T) {
 	t.Parallel()
-	cfg := models.DefaultGPUProvisionConfig("vlm-e2e-gpu", "sign_verify_vlm_gpu")
+	cfg := models.DefaultGPUProvisionConfig("vlm-gpu", "sign_verify_vlm_gpu")
 	cfg.Infrastructure.PrimaryProvider = models.GPUProviderAWS
 	cfg.Infrastructure.FallbackProvider = models.GPUProviderName("none")
 	cfg.Timeouts.SSHReadyPrimarySec = 600

@@ -78,18 +78,36 @@ func (r *creditsRepository) UpsertCredits(ctx context.Context, userID string, am
 	return &result, nil
 }
 
-func (r *creditsRepository) DeductCredits(ctx context.Context, userID string, amount int) error {
-	// First check if user has enough credits
-	credits, err := r.GetByUserID(ctx, userID)
+// DeductCredits atomically deducts credits using a single conditional update:
+// the document must match both the userID and credits >= amount, so concurrent
+// deductions can never drive the balance negative. Returns the record after
+// the deduction.
+func (r *creditsRepository) DeductCredits(ctx context.Context, userID string, amount int) (*models.Credits, error) {
+	filter := deductCreditsFilter(userID, amount)
+	update := bson.M{"$inc": bson.M{"credits": -amount}}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+
+	var result models.Credits
+	err := r.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
 	if err != nil {
-		return err
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			// Conditional update did not match: distinguish a missing record from
+			// an insufficient balance to preserve the existing error contract.
+			if _, getErr := r.GetByUserID(ctx, userID); getErr != nil {
+				return nil, getErr
+			}
+			return nil, apperrors.NewInsufficientCreditsError()
+		}
+		return nil, err
 	}
+	return &result, nil
+}
 
-	if credits.Credits < amount {
-		return apperrors.NewInsufficientCreditsError()
+func deductCreditsFilter(userID string, amount int) bson.M {
+	return bson.M{
+		"userId":  userID,
+		"credits": bson.M{"$gte": amount},
 	}
-
-	return r.UpdateCredits(ctx, userID, -amount)
 }
 
 func (r *creditsRepository) DeleteByUserID(ctx context.Context, userID string) error {

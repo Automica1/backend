@@ -23,6 +23,7 @@ type EnqueueJobOptions struct {
 type JobService interface {
 	Enqueue(ctx context.Context, jobType string, opts EnqueueJobOptions) (*models.Job, error)
 	CancelPendingByIdempotencyKey(ctx context.Context, key string) (int64, error)
+	ReschedulePendingByIdempotencyKey(ctx context.Context, key string, runAfter time.Time) (int64, error)
 	CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error)
 	MarkCancelled(ctx context.Context, jobID primitive.ObjectID) error
 	HasActiveByIdempotencyKey(ctx context.Context, key string) (bool, error)
@@ -93,6 +94,10 @@ func (s *jobService) HasRunningGPUPoolDestroy(ctx context.Context, serviceTag st
 
 func (s *jobService) CancelPendingByIdempotencyKey(ctx context.Context, key string) (int64, error) {
 	return s.repo.CancelPendingByIdempotencyKey(ctx, key)
+}
+
+func (s *jobService) ReschedulePendingByIdempotencyKey(ctx context.Context, key string, runAfter time.Time) (int64, error) {
+	return s.repo.ReschedulePendingByIdempotencyKey(ctx, key, runAfter)
 }
 
 func (s *jobService) CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error) {

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"testing"
+	"time"
 
 	"chi-mongo-backend/internal/config"
 	"chi-mongo-backend/internal/models"
@@ -34,6 +35,10 @@ func (r *recordingJobService) CancelPendingByIdempotencyKey(ctx context.Context,
 
 func (r *recordingJobService) CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error) {
 	r.cancelRunningKey = key
+	return 1, nil
+}
+
+func (r *recordingJobService) ReschedulePendingByIdempotencyKey(ctx context.Context, key string, runAfter time.Time) (int64, error) {
 	return 1, nil
 }
 

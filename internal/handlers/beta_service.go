@@ -12,6 +12,14 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+type PublicServicePolicyResponse struct {
+	Message        string                `json:"message"`
+	ServiceName    string                `json:"serviceName"`
+	BetaServiceTag string                `json:"betaServiceTag,omitempty"`
+	Label          string                `json:"label,omitempty"`
+	ServicePolicy  *models.ServicePolicy `json:"servicePolicy,omitempty"`
+}
+
 type BetaServiceHandler struct {
 	betaServiceService services.BetaServiceService
 	adminService       services.AdminService
@@ -43,6 +51,19 @@ func (h *BetaServiceHandler) ListBetaServices(w http.ResponseWriter, r *http.Req
 		Message:  "Beta services retrieved successfully",
 		Services: items,
 		Total:    len(items),
+	})
+}
+
+func (h *BetaServiceHandler) GetBetaService(w http.ResponseWriter, r *http.Request) {
+	tag := chi.URLParam(r, "tag")
+	service, err := h.betaServiceService.GetByTag(r.Context(), tag)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
+		"message": "Beta service retrieved successfully",
+		"service": service,
 	})
 }
 
@@ -114,5 +135,27 @@ func (h *BetaServiceHandler) UpdateBetaService(w http.ResponseWriter, r *http.Re
 	utils.SendJSONResponse(w, http.StatusOK, map[string]interface{}{
 		"message": "Beta service updated successfully",
 		"service": service,
+	})
+}
+
+func (h *BetaServiceHandler) GetPublicServicePolicy(w http.ResponseWriter, r *http.Request) {
+	serviceName := chi.URLParam(r, "serviceName")
+	if serviceName == "" {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, http.StatusBadRequest, "serviceName is required"))
+		return
+	}
+
+	service, err := h.betaServiceService.GetActiveByServiceName(r.Context(), serviceName)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+
+	utils.SendJSONResponse(w, http.StatusOK, PublicServicePolicyResponse{
+		Message:        "Service policy resolved successfully",
+		ServiceName:    service.ServiceName,
+		BetaServiceTag: service.Tag,
+		Label:          service.Label,
+		ServicePolicy:  service.ServicePolicy,
 	})
 }

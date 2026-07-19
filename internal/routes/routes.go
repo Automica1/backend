@@ -21,6 +21,7 @@ type Handlers struct {
 	QRExtraction          *handlers.QRExtractionHandler
 	IDCropping            *handlers.IDCroppingHandler
 	DocumentEnhancement   *handlers.DocumentEnhancementHandler
+	OCR                   *handlers.OCRHandler
 	SignatureVerification *handlers.SignatureVerificationHandler
 	FaceDetect            *handlers.FaceDetectionHandler
 	FaceVerify            *handlers.FaceVerificationHandler
@@ -35,6 +36,8 @@ type Handlers struct {
 	Subscription          *handlers.SubscriptionHandler // Add subscription handler
 	Plan                  *handlers.PlanHandler         // Add plan handler
 	GPUPool               *handlers.GPUPoolHandler
+	AISaaS                *handlers.AISaaSHandler
+	AIServices            *handlers.AIServicesHandler
 }
 
 // Services struct to hold required services for middleware
@@ -53,7 +56,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 	r.Use(middleware.RealIP())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recoverer())
-	r.Use(middleware.Timeout(90 * time.Second))
+	r.Use(middleware.Timeout(300 * time.Second))
 	r.Use(middleware.CORS())
 
 	// Health check routes
@@ -68,8 +71,12 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Get("/plans", h.Plan.GetActivePlans) // Public plans list
 			r.Get("/billing-config", h.Plan.GetPublicBillingConfig)
 			r.Post("/subscription/razorpay/verify-callback", h.Subscription.RazorpayVerifyCallback)
+			r.Get("/services/{serviceName}/policy", h.BetaService.GetPublicServicePolicy)
 
 			r.Route("/guest-passes", func(r chi.Router) {
+				// Throttle per client IP: these endpoints accept guest-pass
+				// keys without account auth and must not be brute-forceable.
+				r.Use(middleware.GuestPassPublicRateLimit(20, time.Minute))
 				r.Get("/balance", h.GuestPass.GetBalance)
 				r.Post("/validate", h.GuestPass.ValidatePass)
 			})
@@ -236,6 +243,41 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Get("/summary", h.Admin.Summary)
 				r.Get("/export/summary.csv", h.Admin.ExportSummaryCSV)
 
+				// AI SaaS service-first runtime/deployment ledger (Admin only, read-only)
+				r.Route("/ai-saas", func(r chi.Router) {
+					r.Get("/services", h.AISaaS.ListServices)
+				})
+
+				// AI Services singleton workbench (Admin only): apiId aggregate + audited mutations.
+				r.Route("/ai-services", func(r chi.Router) {
+					r.Get("/", h.AIServices.ListServices)
+					r.Get("/services", h.AIServices.ListServices)
+					r.Route("/{apiId}", func(r chi.Router) {
+						r.Get("/", h.AIServices.GetService)
+						r.Put("/policy", h.AIServices.UpdatePolicy)
+					r.Put("/registry", h.AIServices.UpdateRegistry)
+					r.Get("/registry/images", h.AIServices.ListRegistryImages)
+					r.Put("/provision", h.AIServices.UpdateProvision)
+						r.Put("/infrastructure/provision", h.AIServices.UpdateProvision)
+						r.Post("/access/keys", h.AIServices.IssueBetaKey)
+						r.Delete("/access/keys/{keyId}", h.AIServices.RevokeBetaKey)
+						r.Get("/feedback", h.AIServices.ListFeedback)
+						r.Get("/feedback/export.csv", h.AIServices.ExportFeedback)
+						r.Route("/runtime", func(r chi.Router) {
+							r.Post("/actions", h.AIServices.RuntimeAction)
+							r.Post("/warm-start", h.AIServices.RuntimeWarmStart)
+							r.Post("/recover", h.AIServices.RuntimeRecover)
+							r.Post("/retry-provision", h.AIServices.RuntimeRetryProvision)
+							r.Post("/abort-provision", h.AIServices.RuntimeAbortProvision)
+							r.Post("/grace-stop", h.AIServices.RuntimeGraceStop)
+							r.Post("/cancel-grace", h.AIServices.RuntimeCancelGrace)
+							r.Post("/extend-grace", h.AIServices.RuntimeExtendGrace)
+							r.Post("/diagnostics", h.AIServices.RuntimeDiagnostics)
+							r.Post("/destroy", h.AIServices.RuntimeDestroy)
+						})
+					})
+				})
+
 				// Plan management endpoints (Admin only)
 				r.Route("/plans", func(r chi.Router) {
 					// GET all plans (including inactive)
@@ -260,6 +302,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Route("/beta-services", func(r chi.Router) {
 					r.Get("/", h.BetaService.ListBetaServices)
 					r.Post("/", h.BetaService.CreateBetaService)
+					r.Get("/{tag}", h.BetaService.GetBetaService)
 					r.Put("/{tag}", h.BetaService.UpdateBetaService)
 				})
 
@@ -285,6 +328,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 				r.Put("/gpu-pools/provision-config", h.GPUPool.PutProvisionConfig)
 				r.Post("/gpu-pools/shutdown", h.GPUPool.AdminShutdown)
 				r.Post("/gpu-pools/cancel-grace", h.GPUPool.AdminCancelGrace)
+				r.Post("/gpu-pools/extend-grace", h.GPUPool.AdminExtendGrace)
 				r.Route("/gpu-pools/{serviceTag}", func(r chi.Router) {
 					r.Get("/", h.GPUPool.GetAdminPool)
 					r.Get("/policy", h.GPUPool.GetPolicy)
@@ -292,8 +336,11 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 					r.Get("/jobs", h.GPUPool.ListJobs)
 					r.Get("/job-log", h.GPUPool.GetJobLog)
 					r.Post("/diagnostics", h.GPUPool.RunDiagnostics)
+					r.Get("/inventory", h.GPUPool.ListInventory)
 					r.Post("/abort-provision", h.GPUPool.AdminAbortProvision)
 					r.Post("/retry-provision", h.GPUPool.AdminRetryProvision)
+					r.Post("/recover", h.GPUPool.AdminRecover)
+					r.Post("/warm-start", h.GPUPool.AdminWarmStart)
 					r.Get("/support", h.GPUPool.GetSupport)
 				})
 			})
@@ -309,6 +356,7 @@ func SetupRoutes(h *Handlers, s *Services) *chi.Mux {
 			r.Post("/qr-extraction", h.QRExtraction.ProcessQRExtraction)
 			r.Post("/id-cropping", h.IDCropping.ProcessIDCropping)
 			r.Post("/document-enhancement", h.DocumentEnhancement.ProcessDocumentEnhancement)
+			r.Post("/ocr", h.OCR.ProcessOCR)
 			r.Post("/signature-verification", h.SignatureVerification.ProcessSignatureVerification)
 			r.Post("/face-detect", h.FaceDetect.ProcessFaceDetection)
 			r.Post("/face-verification", h.FaceVerify.ProcessFaceVerification)

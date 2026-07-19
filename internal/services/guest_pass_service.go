@@ -274,6 +274,14 @@ func (s *guestPassService) RecordUsage(ctx context.Context, keyHash string) erro
 	return s.guestPassRepo.UpdateLastUsed(ctx, keyHash)
 }
 
+// guestPassSecretAlphabet is lowercase and unambiguous (no i/l/o/0/1) so keys
+// survive NormalizeGuestPassKey and are easy to read aloud or retype.
+const guestPassSecretAlphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+
+// guestPassSecretLength gives ~79 bits of entropy (16 chars × log2(31)),
+// on top of the three-word human-readable prefix.
+const guestPassSecretLength = 16
+
 func (s *guestPassService) generateGuestPassKey() (plaintext, keyHash, keyPrefix string, err error) {
 	w1, err := randomGuestPassWord()
 	if err != nil {
@@ -288,13 +296,14 @@ func (s *guestPassService) generateGuestPassKey() (plaintext, keyHash, keyPrefix
 		return "", "", "", err
 	}
 
-	n, err := rand.Int(rand.Reader, big.NewInt(90))
+	secret, err := randomGuestPassSecret(guestPassSecretLength)
 	if err != nil {
 		return "", "", "", err
 	}
-	suffix := int(n.Int64()) + 10
 
-	plaintext = fmt.Sprintf("%s-%s-%s-%d", w1, w2, w3, suffix)
+	// Split the secret into two groups for readability.
+	half := len(secret) / 2
+	plaintext = fmt.Sprintf("%s-%s-%s-%s-%s", w1, w2, w3, secret[:half], secret[half:])
 	keyHash = s.hashGuestPassKey(plaintext)
 	parts := strings.Split(plaintext, "-")
 	if len(parts) >= 2 {
@@ -303,6 +312,19 @@ func (s *guestPassService) generateGuestPassKey() (plaintext, keyHash, keyPrefix
 		keyPrefix = plaintext[:min(8, len(plaintext))] + "…"
 	}
 	return plaintext, keyHash, keyPrefix, nil
+}
+
+func randomGuestPassSecret(length int) (string, error) {
+	out := make([]byte, length)
+	alphabetSize := big.NewInt(int64(len(guestPassSecretAlphabet)))
+	for i := range out {
+		n, err := rand.Int(rand.Reader, alphabetSize)
+		if err != nil {
+			return "", err
+		}
+		out[i] = guestPassSecretAlphabet[n.Int64()]
+	}
+	return string(out), nil
 }
 
 func randomGuestPassWord() (string, error) {

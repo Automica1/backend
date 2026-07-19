@@ -26,6 +26,7 @@ type JobRepository interface {
 	ReleaseStaleLocks(ctx context.Context, workerID string, staleBefore time.Time) (int64, error)
 	ReleaseAllRunningLocks(ctx context.Context, reason string) (int64, error)
 	CancelPendingByIdempotencyKey(ctx context.Context, key string) (int64, error)
+	ReschedulePendingByIdempotencyKey(ctx context.Context, key string, runAfter time.Time) (int64, error)
 	CancelRunningByIdempotencyKey(ctx context.Context, key string) (int64, error)
 	MarkCancelled(ctx context.Context, id primitive.ObjectID) error
 	MarkDeadByIdempotencyKey(ctx context.Context, key, reason string) (int64, error)
@@ -250,7 +251,7 @@ func (r *jobRepository) ReleaseAllRunningLocks(ctx context.Context, reason strin
 func (r *jobRepository) ReleaseStaleLocks(ctx context.Context, workerID string, staleBefore time.Time) (int64, error) {
 	// Reclaim any running job past lock timeout (including orphaned locks from dead workers).
 	result, err := r.collection.UpdateMany(ctx, bson.M{
-		"status": models.JobStatusRunning,
+		"status":   models.JobStatusRunning,
 		"lockedAt": bson.M{"$lt": staleBefore},
 	}, bson.M{
 		"$set": bson.M{
@@ -278,6 +279,25 @@ func (r *jobRepository) CancelPendingByIdempotencyKey(ctx context.Context, key s
 		"$set": bson.M{
 			"status":      models.JobStatusCancelled,
 			"completedAt": now,
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ModifiedCount, nil
+}
+
+func (r *jobRepository) ReschedulePendingByIdempotencyKey(ctx context.Context, key string, runAfter time.Time) (int64, error) {
+	if key == "" {
+		return 0, nil
+	}
+	result, err := r.collection.UpdateMany(ctx, bson.M{
+		"idempotencyKey": key,
+		"status":         models.JobStatusPending,
+	}, bson.M{
+		"$set": bson.M{
+			"runAfter":  runAfter,
+			"updatedAt": time.Now().UTC(),
 		},
 	})
 	if err != nil {

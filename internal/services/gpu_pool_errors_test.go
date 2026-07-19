@@ -17,6 +17,8 @@ func TestIsTerminalProvisionError(t *testing.T) {
 	}{
 		{"E2E node 321707 failed (status=Failed recreate)", true},
 		{"E2E node 1 stalled in status=Creating for 360s", true},
+		{"Missing dist/images.tar.gz — building from source. THIS NEEDS INTERNET.", true},
+		{"failed to copy: failed to send write: error reading from server: EOF", true},
 		{"412 Precondition Failed", false},
 		{"SSH not reachable on 1.2.3.4", false},
 	}

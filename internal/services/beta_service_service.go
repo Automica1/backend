@@ -14,6 +14,7 @@ import (
 type BetaServiceService interface {
 	Create(ctx context.Context, req *models.CreateBetaServiceRequest) (*models.BetaService, error)
 	GetByTag(ctx context.Context, tag string) (*models.BetaService, error)
+	GetActiveByServiceName(ctx context.Context, serviceName string) (*models.BetaService, error)
 	GetActiveByTag(ctx context.Context, tag string) (*models.BetaService, error)
 	List(ctx context.Context, serviceName string, activeOnly bool) ([]*models.BetaService, error)
 	Update(ctx context.Context, tag string, req *models.UpdateBetaServiceRequest) (*models.BetaService, error)
@@ -39,13 +40,15 @@ func (s *betaServiceService) Create(ctx context.Context, req *models.CreateBetaS
 	}
 
 	service := &models.BetaService{
-		Tag:         req.Tag,
-		ServiceName: req.ServiceName,
-		Label:       req.Label,
-		APIURL:      req.APIURL,
-		IsActive:    isActive,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		Tag:              req.Tag,
+		ServiceName:      req.ServiceName,
+		Label:            req.Label,
+		APIURL:           req.APIURL,
+		IsActive:         isActive,
+		ServicePolicy:    req.ServicePolicy,
+		RegistrySettings: req.RegistrySettings,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	if err := s.repo.Create(ctx, service); err != nil {
@@ -56,6 +59,10 @@ func (s *betaServiceService) Create(ctx context.Context, req *models.CreateBetaS
 
 func (s *betaServiceService) GetByTag(ctx context.Context, tag string) (*models.BetaService, error) {
 	return s.repo.GetByTag(ctx, tag)
+}
+
+func (s *betaServiceService) GetActiveByServiceName(ctx context.Context, serviceName string) (*models.BetaService, error) {
+	return s.repo.GetActiveByServiceName(ctx, serviceName)
 }
 
 func (s *betaServiceService) GetActiveByTag(ctx context.Context, tag string) (*models.BetaService, error) {
@@ -80,6 +87,12 @@ func (s *betaServiceService) Update(ctx context.Context, tag string, req *models
 	}
 	if req.IsActive != nil {
 		update["isActive"] = *req.IsActive
+	}
+	if req.ServicePolicy != nil {
+		update["servicePolicy"] = req.ServicePolicy
+	}
+	if req.RegistrySettings != nil {
+		update["registrySettings"] = req.RegistrySettings
 	}
 
 	return s.repo.Update(ctx, tag, update)

@@ -17,6 +17,7 @@ import (
 type BetaServiceRepository interface {
 	Create(ctx context.Context, service *models.BetaService) error
 	GetByTag(ctx context.Context, tag string) (*models.BetaService, error)
+	GetActiveByServiceName(ctx context.Context, serviceName string) (*models.BetaService, error)
 	GetActiveByTag(ctx context.Context, tag string) (*models.BetaService, error)
 	List(ctx context.Context, serviceName string, activeOnly bool) ([]*models.BetaService, error)
 	Update(ctx context.Context, tag string, update bson.M) (*models.BetaService, error)
@@ -63,6 +64,25 @@ func (r *betaServiceRepository) GetActiveByTag(ctx context.Context, tag string) 
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, apperrors.NewAppError(apperrors.ErrForbidden, 403, "beta service is not available")
+		}
+		return nil, err
+	}
+	return &service, nil
+}
+
+func (r *betaServiceRepository) GetActiveByServiceName(ctx context.Context, serviceName string) (*models.BetaService, error) {
+	var service models.BetaService
+	err := r.collection.FindOne(
+		ctx,
+		bson.M{
+			"serviceName": serviceName,
+			"isActive":    true,
+		},
+		options.FindOne().SetSort(bson.D{{Key: "updatedAt", Value: -1}}),
+	).Decode(&service)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, apperrors.NewAppError(apperrors.ErrNotFound, 404, "beta service not found")
 		}
 		return nil, err
 	}

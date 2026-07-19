@@ -48,6 +48,34 @@ func (l *guestPassRateLimiter) allow(ip string, max int, window time.Duration) b
 	return true
 }
 
+// guestPassClientIP resolves the client IP used for guest-pass throttling,
+// preferring the first X-Forwarded-For hop when behind the gateway.
+func guestPassClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+	return r.RemoteAddr
+}
+
+// GuestPassPublicRateLimit throttles unauthenticated guest-pass endpoints
+// (validate/balance) per client IP to prevent key brute-forcing.
+func GuestPassPublicRateLimit(max int, window time.Duration) func(http.Handler) http.Handler {
+	limiter := &guestPassRateLimiter{attempts: make(map[string][]time.Time)}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !limiter.allow(guestPassClientIP(r), max, window) {
+				utils.SendErrorResponse(w, apperrors.NewAppError(
+					apperrors.ErrBadRequest,
+					http.StatusTooManyRequests,
+					"too many guest pass attempts",
+				))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func GetGuestPassFromContext(ctx context.Context) (*models.GuestPass, bool) {
 	pass, ok := ctx.Value(GuestPassContextKey).(*models.GuestPass)
 	return pass, ok
@@ -65,11 +93,7 @@ func AuthOrAPIKeyOrGuestPass(apiKeyService services.APIKeyService, guestPassServ
 			authHeader := r.Header.Get("Authorization")
 
 			if guestPassHeader != "" && (authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ak_live_")) {
-				clientIP := r.RemoteAddr
-				if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-					clientIP = strings.TrimSpace(strings.Split(xff, ",")[0])
-				}
-				if !guestPassLimiter.allow(clientIP, 10, time.Minute) {
+				if !guestPassLimiter.allow(guestPassClientIP(r), 10, time.Minute) {
 					utils.SendErrorResponse(w, apperrors.NewAppError(
 						apperrors.ErrBadRequest,
 						http.StatusTooManyRequests,

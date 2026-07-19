@@ -78,20 +78,15 @@ func (s *creditsService) DeductCredits(ctx context.Context, req *models.DeductCr
 		return nil, apperrors.NewAppError(apperrors.ErrValidation, 400, "validation failed", err.Error())
 	}
 
-	// Get current credits to return updated balance
-	currentCredits, err := s.creditsRepo.GetByUserID(ctx, req.UserID)
+	// Atomic conditional deduction; returns the balance after the update.
+	updatedCredits, err := s.creditsRepo.DeductCredits(ctx, req.UserID, req.Amount)
 	if err != nil {
-		return nil, err
-	}
-
-	// Deduct credits using the amount from request
-	if err := s.creditsRepo.DeductCredits(ctx, req.UserID, req.Amount); err != nil {
 		return nil, err
 	}
 
 	return &models.CreditsResponse{
 		Message: "Credits deducted successfully",
 		UserID:  req.UserID,
-		Credits: currentCredits.Credits - req.Amount,
+		Credits: updatedCredits.Credits,
 	}, nil
 }

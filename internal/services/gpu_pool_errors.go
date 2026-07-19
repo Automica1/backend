@@ -28,6 +28,11 @@ func SanitizeGPUPoolUserError(raw string, hintMin int) string {
 		strings.Contains(lower, "precondition failed"):
 		return "The test resource was still shutting down from a previous run. Please wait a minute and try Start session again."
 
+	case strings.Contains(lower, "e2e_host_ip"),
+		strings.Contains(lower, "e2e_host_ip missing"),
+		strings.Contains(lower, "host ip missing"):
+		return "Test resource networking could not finish. Please try Start session again."
+
 	case strings.Contains(lower, "maintenance"),
 		strings.Contains(lower, "temporarily unavailable"):
 		return raw
@@ -67,7 +72,12 @@ func IsTerminalProvisionError(raw string) bool {
 	switch {
 	case strings.Contains(lower, "failed recreate"),
 		strings.Contains(lower, "stalled in status"),
-		strings.Contains(lower, "gpu plan temporarily not available"):
+		strings.Contains(lower, "gpu plan temporarily not available"),
+		strings.Contains(lower, "missing dist/images.tar.gz"),
+		strings.Contains(lower, "build from source"),
+		strings.Contains(lower, "docker compose build"),
+		strings.Contains(lower, "failed to copy: failed to send write"),
+		strings.Contains(lower, "error reading from server: eof"):
 		return true
 	default:
 		return false

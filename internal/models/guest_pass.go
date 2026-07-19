@@ -89,14 +89,14 @@ type CreateGuestPassRequest struct {
 }
 
 type CreateGuestPassResponse struct {
-	Message          string     `json:"message"`
-	GuestPassKey     string     `json:"guestPassKey"`
-	KeyPrefix        string     `json:"keyPrefix"`
-	Label            string     `json:"label"`
-	InitialCredits   int        `json:"initialCredits"`
-	AllowedServices  []string   `json:"allowedServices"`
-	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
+	Message         string     `json:"message"`
+	GuestPassKey    string     `json:"guestPassKey"`
+	KeyPrefix       string     `json:"keyPrefix"`
+	Label           string     `json:"label"`
+	InitialCredits  int        `json:"initialCredits"`
+	AllowedServices []string   `json:"allowedServices"`
+	ExpiresAt       *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
 }
 
 type UpdateGuestPassRequest struct {
@@ -122,12 +122,14 @@ type GuestPassBalanceResponse struct {
 	ServiceAllowed   bool       `json:"serviceAllowed,omitempty"`
 }
 
+// GuestPassValidateResponse is returned by the public validate endpoint.
+// It intentionally omits balance and allowed-service inventory so an
+// unauthenticated caller cannot use validation as an oracle; key holders
+// get balance details from the balance endpoint instead.
 type GuestPassValidateResponse struct {
-	Message          string   `json:"message"`
-	Valid            bool     `json:"valid"`
-	RemainingCredits int      `json:"remainingCredits,omitempty"`
-	AllowedServices  []string `json:"allowedServices,omitempty"`
-	ServiceAllowed   bool     `json:"serviceAllowed,omitempty"`
+	Message        string `json:"message"`
+	Valid          bool   `json:"valid"`
+	ServiceAllowed bool   `json:"serviceAllowed"`
 }
 
 type RevokeGuestPassResponse struct {

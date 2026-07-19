@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"chi-mongo-backend/internal/config"
 	"chi-mongo-backend/internal/middleware"
@@ -170,6 +171,28 @@ func (h *GPUPoolHandler) AdminCancelGrace(w http.ResponseWriter, r *http.Request
 	}
 
 	pool, err := h.gpuPoolService.AdminCancelGrace(r.Context(), req.ServiceTag)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, pool)
+}
+
+func (h *GPUPoolHandler) AdminExtendGrace(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ServiceTag string `json:"serviceTag"`
+		ExtendMin  int    `json:"extendMin"`
+	}
+	if err := utils.DecodeJSONBody(r, &req); err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	if req.ExtendMin <= 0 {
+		utils.SendErrorResponse(w, apperrors.NewAppError(apperrors.ErrValidation, http.StatusBadRequest, "extendMin must be greater than 0"))
+		return
+	}
+
+	pool, err := h.gpuPoolService.AdminExtendGrace(r.Context(), req.ServiceTag, time.Duration(req.ExtendMin)*time.Minute)
 	if err != nil {
 		utils.SendErrorResponse(w, err)
 		return

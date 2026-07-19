@@ -55,7 +55,7 @@ func main() {
 	usageRepo := repository.NewUsageRepository(db.GetCollection("usage"))              // Add usage repository
 	subRepo := repository.NewSubscriptionRepository(db.GetCollection("subscriptions")) // Add subscription repository
 	paymentEventRepo := repository.NewPaymentEventRepository(db.GetCollection("payment_events"))
-	planRepo := repository.NewPlanRepository(db.GetCollection("plans"))                // Add plan repository
+	planRepo := repository.NewPlanRepository(db.GetCollection("plans")) // Add plan repository
 	jobRepo := repository.NewJobRepository(db.GetCollection("jobs"))
 	gpuPoolRepo := repository.NewGPUPoolRepository(db.GetCollection("gpu_pools"))
 	gpuProvisionConfigRepo := repository.NewGPUProvisionConfigRepository(db.GetCollection("gpu_provision_configs"))
@@ -83,12 +83,23 @@ func main() {
 	jobService := services.NewJobService(jobRepo)
 	gpuProvisionConfigService := services.NewGPUProvisionConfigService(gpuProvisionConfigRepo)
 	gpuPoolService := services.NewGPUPoolService(gpuPoolRepo, jobService, creditsService, gpuProvisionConfigService, cfg)
+	aiSaaSService := services.NewAISaaSService(betaServiceRepo, betaKeyRepo, gpuPoolRepo, gpuProvisionConfigRepo, jobRepo, usageService, betaFeedbackRepo)
+	aiServicesFacade := services.NewAIServicesFacade(
+		aiSaaSService,
+		betaServiceService,
+		betaKeyService,
+		gpuPoolService,
+		gpuProvisionConfigService,
+		adminService,
+		gpuPoolRepo,
+	)
 
 	// Initialize API services
 	qrAPIService := services.NewQRMaskingAPIService()
 	qrExtractionAPIService := services.NewQRExtractionAPIService()
 	idCroppingAPIService := services.NewIDCroppingAPIService()
 	documentEnhancementAPIService := services.NewDocumentEnhancementAPIService()
+	ocrAPIService := services.NewOCRAPIService()
 	signatureAPIService := services.NewSignatureVerificationAPIService()
 	faceDetectionAPIService := services.NewFaceDetectionAPIService()
 	faceVerificationAPIService := services.NewFaceVerificationAPIService()
@@ -118,22 +129,24 @@ func main() {
 	log.Println("✅ All services initialized successfully")
 
 	// Initialize handlers (only SignatureVerification has usage tracking implemented)
+	gpuPoolHandler := handlers.NewGPUPoolHandler(gpuPoolService, gpuProvisionConfigService, userService, jobRepo, jobService, cfg)
 	handlers := &routes.Handlers{
-		Health:  handlers.NewHealthHandler(),
-		Admin:   handlers.NewAdminHandler(adminService),
-		User:    handlers.NewUserHandler(userService, adminService),
-		Credits: handlers.NewCreditsHandler(creditsService, userService, adminService),
-		Token:   handlers.NewTokenHandler(tokenService, creditsService, userService, adminService),
-		APIKey:  handlers.NewAPIKeyHandler(apiKeyService, userService),
-		BetaKey:     handlers.NewBetaKeyHandler(betaKeyService, adminService),
-		BetaService: handlers.NewBetaServiceHandler(betaServiceService, adminService),
+		Health:       handlers.NewHealthHandler(),
+		Admin:        handlers.NewAdminHandler(adminService),
+		User:         handlers.NewUserHandler(userService, adminService),
+		Credits:      handlers.NewCreditsHandler(creditsService, userService, adminService),
+		Token:        handlers.NewTokenHandler(tokenService, creditsService, userService, adminService),
+		APIKey:       handlers.NewAPIKeyHandler(apiKeyService, userService),
+		BetaKey:      handlers.NewBetaKeyHandler(betaKeyService, adminService),
+		BetaService:  handlers.NewBetaServiceHandler(betaServiceService, adminService),
 		BetaFeedback: handlers.NewBetaFeedbackHandler(betaFeedbackService, userService, adminService),
 		GuestPass:    handlers.NewGuestPassHandler(guestPassService, adminService),
 		// These handlers don't have usage tracking yet - using original constructors
-		QRMasking:    handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
-		QRExtraction: handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
-		IDCropping:   handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
+		QRMasking:           handlers.NewQRMaskingHandler(creditsService, userService, qrAPIService, usageService),
+		QRExtraction:        handlers.NewQRExtractionHandler(creditsService, userService, qrExtractionAPIService, usageService),
+		IDCropping:          handlers.NewIDCroppingHandler(creditsService, userService, idCroppingAPIService, usageService),
 		DocumentEnhancement: handlers.NewDocumentEnhancementHandler(creditsService, userService, documentEnhancementAPIService, usageService),
+		OCR:                 handlers.NewOCRHandler(creditsService, userService, ocrAPIService, gpuPoolService, usageService, betaServiceService),
 		// SignatureVerification has usage tracking implemented
 		SignatureVerification: handlers.NewSignatureVerificationHandler(creditsService, userService, signatureAPIService, betaKeyService, betaServiceService, betaFeedbackService, usageService),
 		// These handlers don't have usage tracking yet - using original constructors
@@ -143,7 +156,9 @@ func main() {
 		Usage:        handlers.NewUsageHandler(usageService),                    // Usage handler for admin endpoints
 		Subscription: handlers.NewSubscriptionHandler(subService, adminService), // Add subscription handler
 		Plan:         handlers.NewPlanHandler(planService, adminService),        // Add plan handler
-		GPUPool:      handlers.NewGPUPoolHandler(gpuPoolService, gpuProvisionConfigService, userService, jobRepo, jobService, cfg),
+		GPUPool:      gpuPoolHandler,
+		AISaaS:       handlers.NewAISaaSHandler(aiSaaSService),
+		AIServices:   handlers.NewAIServicesHandler(aiServicesFacade, betaFeedbackService, gpuPoolHandler),
 	}
 
 	// Verify handlers are initialized
@@ -158,6 +173,9 @@ func main() {
 	}
 	if handlers.Usage == nil {
 		log.Fatal("❌ Usage handler is nil")
+	}
+	if handlers.AISaaS == nil {
+		log.Fatal("❌ AI SaaS handler is nil")
 	}
 
 	log.Println("✅ All handlers initialized successfully")

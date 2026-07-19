@@ -13,8 +13,8 @@ import (
 	"chi-mongo-backend/internal/database"
 	"chi-mongo-backend/internal/repository"
 	"chi-mongo-backend/internal/services"
-	workerhandlers "chi-mongo-backend/internal/worker/handlers"
 	"chi-mongo-backend/internal/worker"
+	workerhandlers "chi-mongo-backend/internal/worker/handlers"
 )
 
 func main() {
@@ -35,6 +35,7 @@ func main() {
 
 	jobRepo := repository.NewJobRepository(db.GetCollection("jobs"))
 	poolRepo := repository.NewGPUPoolRepository(db.GetCollection("gpu_pools"))
+	betaServiceRepo := repository.NewBetaServiceRepository(db.GetCollection("beta_services"))
 	provisionConfigRepo := repository.NewGPUProvisionConfigRepository(db.GetCollection("gpu_provision_configs"))
 	userRepo := repository.NewUserRepository(db.GetCollection("users"))
 	creditsRepo := repository.NewCreditsRepository(db.GetCollection("credits"))
@@ -45,7 +46,7 @@ func main() {
 
 	registry := worker.NewRegistry()
 	workerhandlers.RegisterSystemHandlers(registry)
-	gpuHandlers := workerhandlers.NewGPUPoolHandlers(cfg, poolRepo, jobRepo, gpuPoolSvc, provisionConfigSvc)
+	gpuHandlers := workerhandlers.NewGPUPoolHandlers(cfg, poolRepo, jobRepo, betaServiceRepo, gpuPoolSvc, provisionConfigSvc)
 	gpuHandlers.Register(registry)
 
 	w := worker.New(cfg, jobRepo, registry)
@@ -54,15 +55,21 @@ func main() {
 	defer cancel()
 
 	go func() {
-		ticker := time.NewTicker(60 * time.Second)
+		interval := time.Duration(cfg.Worker.GPUPoolReconcileIntervalSec) * time.Second
+		if interval <= 0 {
+			log.Println("gpu pool scheduled reconcile disabled")
+			return
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		log.Printf("gpu pool scheduled reconcile every %s", interval)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := gpuPoolSvc.ReconcileIdleWarmPools(ctx); err != nil {
-					log.Printf("idle warm pool reconcile: %v", err)
+				if err := gpuPoolSvc.ReconcileScheduledState(ctx); err != nil {
+					log.Printf("gpu pool scheduled reconcile: %v", err)
 				}
 			}
 		}

@@ -20,18 +20,19 @@ type Config struct {
 }
 
 type WorkerConfig struct {
-	PollIntervalSec int
-	LockTimeoutSec  int
-	JobTimeoutSec   int
-	AutomicaRoot    string
-	GracePeriodMin  int
-	UseWarmBoot     bool
+	PollIntervalSec             int
+	LockTimeoutSec              int
+	JobTimeoutSec               int
+	GPUPoolReconcileIntervalSec int
+	AutomicaRoot                string
+	GracePeriodMin              int
+	UseWarmBoot                 bool
 	// GPU pool session billing (Phase 2)
-	CreditsPerMin    int
-	StartupCredits   int
-	MinStartCredits  int
-	MeterIntervalSec      int
-	ReconnectCooldownSec  int
+	CreditsPerMin        int
+	StartupCredits       int
+	MinStartCredits      int
+	MeterIntervalSec     int
+	ReconnectCooldownSec int
 }
 
 type RazorpayConfig struct {
@@ -100,17 +101,18 @@ func Load() (*Config, error) {
 			NginxErrorPath:  getEnvOrDefault("NGINX_ERROR_LOG_PATH", "/home/ec2-user/.pm2/logs/automica-nginx-error.log"),
 		},
 		Worker: WorkerConfig{
-			PollIntervalSec:  getEnvAsInt("WORKER_POLL_INTERVAL_SEC", 5),
-			LockTimeoutSec:   getEnvAsInt("WORKER_LOCK_TIMEOUT_SEC", 1800),
-			JobTimeoutSec:    getEnvAsInt("WORKER_JOB_TIMEOUT_SEC", 3600),
-			AutomicaRoot:     getEnvOrDefault("AUTOMICA_ROOT", ""),
-			GracePeriodMin:   getEnvAsInt("GPU_POOL_GRACE_MIN", 5),
-			UseWarmBoot:      os.Getenv("E2E_USE_SAVED_IMAGE") == "1",
-			CreditsPerMin:    getEnvAsInt("GPU_POOL_CREDITS_PER_MIN", 2),
-			StartupCredits:   getEnvAsInt("GPU_POOL_STARTUP_CREDITS", 20),
-			MinStartCredits:  getEnvAsInt("GPU_POOL_MIN_START_CREDITS", 30),
-			MeterIntervalSec: getEnvAsInt("GPU_POOL_METER_INTERVAL_SEC", 60),
-			ReconnectCooldownSec: getEnvAsInt("GPU_POOL_RECONNECT_COOLDOWN_SEC", 300),
+			PollIntervalSec:             getEnvAsInt("WORKER_POLL_INTERVAL_SEC", 5),
+			LockTimeoutSec:              getEnvAsInt("WORKER_LOCK_TIMEOUT_SEC", 1800),
+			JobTimeoutSec:               getEnvAsInt("WORKER_JOB_TIMEOUT_SEC", 3600),
+			GPUPoolReconcileIntervalSec: getEnvAsInt("GPU_POOL_RECONCILE_INTERVAL_SEC", 300),
+			AutomicaRoot:                getEnvOrDefault("AUTOMICA_ROOT", ""),
+			GracePeriodMin:              getEnvAsInt("GPU_POOL_GRACE_MIN", 5),
+			UseWarmBoot:                 os.Getenv("E2E_USE_SAVED_IMAGE") == "1",
+			CreditsPerMin:               getEnvAsInt("GPU_POOL_CREDITS_PER_MIN", 2),
+			StartupCredits:              getEnvAsInt("GPU_POOL_STARTUP_CREDITS", 20),
+			MinStartCredits:             getEnvAsInt("GPU_POOL_MIN_START_CREDITS", 30),
+			MeterIntervalSec:            getEnvAsInt("GPU_POOL_METER_INTERVAL_SEC", 60),
+			ReconnectCooldownSec:        getEnvAsInt("GPU_POOL_RECONNECT_COOLDOWN_SEC", 300),
 		},
 	}
 

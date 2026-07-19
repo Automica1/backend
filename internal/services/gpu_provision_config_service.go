@@ -27,19 +27,31 @@ func NewGPUProvisionConfigService(repo repository.GPUProvisionConfigRepository) 
 }
 
 func (s *gpuProvisionConfigService) GetOrDefault(ctx context.Context, serviceTag string) (*models.GPUProvisionConfig, error) {
-	cfg, err := s.repo.GetByServiceTag(ctx, serviceTag)
+	canonical := models.CanonicalGPUServiceTag(serviceTag)
+	cfg, err := s.repo.GetByServiceTag(ctx, canonical)
 	if err != nil {
 		return nil, err
 	}
+	if cfg == nil && canonical != serviceTag {
+		// Migration: older environments may still only have the legacy-tagged doc.
+		cfg, err = s.repo.GetByServiceTag(ctx, serviceTag)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if cfg != nil {
 		cfg.Normalize()
+		cfg.ServiceTag = canonical
 		return cfg, nil
 	}
-	serviceName := models.ServiceTagToPipelineService[serviceTag]
+	serviceName := models.ServiceTagToPipelineService[canonical]
+	if serviceName == "" {
+		serviceName = models.ServiceTagToPipelineService[serviceTag]
+	}
 	if serviceName == "" {
 		serviceName = "sign_verify_vlm_gpu"
 	}
-	out := models.DefaultGPUProvisionConfig(serviceTag, serviceName)
+	out := models.DefaultGPUProvisionConfig(canonical, serviceName)
 	return out, nil
 }
 
@@ -47,6 +59,7 @@ func (s *gpuProvisionConfigService) Upsert(ctx context.Context, cfg *models.GPUP
 	if cfg.ServiceTag == "" {
 		return nil, fmt.Errorf("serviceTag is required")
 	}
+	cfg.ServiceTag = models.CanonicalGPUServiceTag(cfg.ServiceTag)
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = models.ServiceTagToPipelineService[cfg.ServiceTag]
 	}
@@ -142,6 +155,20 @@ func (s *gpuProvisionConfigService) WorkerEnv(cfg *models.GPUProvisionConfig) []
 		fmt.Sprintf("GPU_DEPLOY_HEALTH_TIMEOUT_SEC=%d", t.DeployHealthSec),
 		"GPU_RETRY_REUSE_NODE=" + reuse,
 		"GPU_SERVICE_TAG=" + cfg.ServiceTag,
+	}
+	switch inf.PrimaryProvider {
+	case models.GPUProviderAWS:
+		lines = append(lines,
+			"GPU_SSH_HOST=vlm-aws",
+			"E2E_SSH_HOST=vlm-aws",
+			"GPU_PROVIDER=aws",
+		)
+	case models.GPUProviderE2E:
+		lines = append(lines,
+			"GPU_SSH_HOST=e2e",
+			"E2E_SSH_HOST=e2e",
+			"GPU_PROVIDER=e2e",
+		)
 	}
 	aws := inf.AWS
 	if aws.Region != "" {

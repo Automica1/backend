@@ -80,12 +80,20 @@ type GPUPoolHandlers struct {
 	cfg                    *config.Config
 	poolRepo               repository.GPUPoolRepository
 	jobRepo                repository.JobRepository
+	betaServiceRepo        repository.BetaServiceRepository
 	gpuPoolService         services.GPUPoolService
 	provisionConfigService services.GPUProvisionConfigService
 }
 
-func NewGPUPoolHandlers(cfg *config.Config, poolRepo repository.GPUPoolRepository, jobRepo repository.JobRepository, gpuPoolService services.GPUPoolService, provisionConfigService services.GPUProvisionConfigService) *GPUPoolHandlers {
-	return &GPUPoolHandlers{cfg: cfg, poolRepo: poolRepo, jobRepo: jobRepo, gpuPoolService: gpuPoolService, provisionConfigService: provisionConfigService}
+func NewGPUPoolHandlers(cfg *config.Config, poolRepo repository.GPUPoolRepository, jobRepo repository.JobRepository, betaServiceRepo repository.BetaServiceRepository, gpuPoolService services.GPUPoolService, provisionConfigService services.GPUProvisionConfigService) *GPUPoolHandlers {
+	return &GPUPoolHandlers{
+		cfg:                    cfg,
+		poolRepo:               poolRepo,
+		jobRepo:                jobRepo,
+		betaServiceRepo:        betaServiceRepo,
+		gpuPoolService:         gpuPoolService,
+		provisionConfigService: provisionConfigService,
+	}
 }
 
 func (h *GPUPoolHandlers) Register(registry *worker.Registry) {
@@ -105,6 +113,105 @@ func (h *GPUPoolHandlers) automicaRoot() string {
 	return "."
 }
 
+func gpuPoolBootstrapStages(serviceTag string) string {
+	switch serviceTag {
+	case models.OCRGPUServiceTag:
+		return "e2e-nvidia,e2e-sync,e2e-deploy,e2e-smoke"
+	default:
+		return "e2e-nvidia,e2e-sync,e2e-ensure-ollama,e2e-ollama,e2e-deploy,e2e-smoke"
+	}
+}
+
+func gpuPoolPostBootstrapStages(serviceTag string) string {
+	switch serviceTag {
+	case models.OCRGPUServiceTag:
+		return "gateway,gateway-smoke,gpu-pool-sync"
+	default:
+		return "gateway,gateway-smoke,beta-seed,gpu-pool-sync"
+	}
+}
+
+func registryAuthModeForService(service *models.BetaService) string {
+	if service == nil || service.RegistrySettings == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(service.RegistrySettings.Provider)) {
+	case "ecr":
+		return "ecr"
+	}
+	switch strings.ToLower(strings.TrimSpace(service.RegistrySettings.Auth)) {
+	case "aws":
+		return "ecr"
+	case "none", "":
+		return ""
+	default:
+		return "static"
+	}
+}
+
+func registryBoolEnv(name string, value *bool) string {
+	if value == nil {
+		return ""
+	}
+	if *value {
+		return name + "=1"
+	}
+	return name + "=0"
+}
+
+func (h *GPUPoolHandlers) workerRegistryEnv(serviceTag, serviceName string) []string {
+	if h.betaServiceRepo == nil || serviceTag == "" {
+		return nil
+	}
+	service, err := h.betaServiceRepo.GetByTag(context.Background(), serviceTag)
+	if err != nil || service == nil || service.RegistrySettings == nil || service.RegistrySettings.IsEmpty() {
+		return nil
+	}
+	reg := service.RegistrySettings
+	lines := []string{}
+	if provider := strings.TrimSpace(reg.Provider); provider != "" {
+		lines = append(lines, "REGISTRY_PROVIDER="+provider)
+	}
+	if authMode := registryAuthModeForService(service); authMode != "" {
+		lines = append(lines, "REGISTRY_AUTH_MODE="+authMode)
+	}
+	if reg.Server != "" {
+		lines = append(lines, "REGISTRY_SERVER="+reg.Server)
+	}
+	if reg.Region != "" {
+		// Registry region is for ECR login/pull only. Never set AWS_REGION here —
+		// that overrides GPU provision (EC2 subnet/SG live in ap-south-1) and
+		// produces InvalidSubnetID.NotFound when ECR defaults to eu-north-1.
+		lines = append(lines, "REGISTRY_ECR_REGION="+reg.Region)
+	}
+	if reg.Server != "" && reg.Namespace != "" {
+		fullNamespace := reg.Server + "/" + reg.Namespace
+		lines = append(lines, "REGISTRY_NAMESPACE_FULL="+fullNamespace)
+		if serviceName == "ocr" {
+			lines = append(lines, "OCR_REGISTRY_NAMESPACE="+fullNamespace)
+		}
+		if reg.ImageTag != "" {
+			lines = append(lines, "DOCKER_PULL_IMAGE="+fullNamespace+"/"+serviceName+":"+reg.ImageTag)
+		}
+	}
+	if reg.ImageTag != "" {
+		lines = append(lines, "REGISTRY_IMAGE_TAG="+reg.ImageTag)
+		if serviceName == "ocr" {
+			lines = append(lines, "OCR_IMAGE_TAG="+reg.ImageTag)
+		}
+	}
+	if line := registryBoolEnv("PREFER_REGISTRY_PULL", reg.PreferRegistryPull); line != "" {
+		lines = append(lines, line)
+	}
+	if line := registryBoolEnv("REGISTRY_LOGIN_REQUIRED", reg.LoginRequired); line != "" {
+		lines = append(lines, line)
+	}
+	if len(lines) > 0 {
+		lines = append(lines, "BETA_SERVICE_REGISTRY_SOURCE=beta-services")
+	}
+	return lines
+}
+
 // workerBootstrapEnv builds shell env for GPU pool worker jobs from policy (no hardcoded timeouts).
 func (h *GPUPoolHandlers) workerBootstrapEnv(root string, job *models.Job) []string {
 	target := os.Getenv("AUTOMICA_TARGET")
@@ -119,17 +226,35 @@ func (h *GPUPoolHandlers) workerBootstrapEnv(root string, job *models.Job) []str
 		"SKIP_OLLAMA_OFFLINE_PREP=1",
 		"E2E_USE_SAVED_IMAGE=0",
 		"GPU_POOL_SYNC_NODE_OWNER=user",
-		"PIPELINE_STAGE=e2e-nvidia,e2e-sync,e2e-ensure-ollama,e2e-ollama,e2e-deploy,e2e-smoke",
 	}
 	if job != nil {
 		env = append(env, fmt.Sprintf("WORKER_JOB_ATTEMPT=%d", job.Attempts))
-		if tag := h.payloadString(job, "serviceTag"); tag != "" && h.provisionConfigService != nil {
-			if cfg, err := h.provisionConfigService.GetOrDefault(context.Background(), tag); err == nil && cfg != nil {
+		serviceTag := h.payloadString(job, "serviceTag")
+		serviceName := h.payloadString(job, "serviceName")
+		if serviceTag != "" {
+			env = append(env, "PIPELINE_STAGE="+gpuPoolBootstrapStages(serviceTag))
+			env = append(env, "NVIDIA_MIN_DRIVER_MAJOR="+nvidiaMinDriverMajor(serviceTag))
+		}
+		if serviceTag != "" && h.provisionConfigService != nil {
+			if cfg, err := h.provisionConfigService.GetOrDefault(context.Background(), serviceTag); err == nil && cfg != nil {
 				env = append(env, h.provisionConfigService.WorkerEnv(cfg)...)
+				if serviceName == "" {
+					serviceName = cfg.ServiceName
+				}
 			}
 		}
+		env = append(env, h.workerRegistryEnv(serviceTag, serviceName)...)
 	}
 	return env
+}
+
+func nvidiaMinDriverMajor(serviceTag string) string {
+	switch models.CanonicalGPUServiceTag(serviceTag) {
+	case models.OCRGPUServiceTag:
+		return "580"
+	default:
+		return "550"
+	}
 }
 
 type provisionState struct {
@@ -140,13 +265,71 @@ type provisionState struct {
 	Status           string `json:"status"`
 }
 
+func inferProvider(nodeID, provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if strings.HasPrefix(strings.TrimSpace(nodeID), "i-") {
+		return "aws"
+	}
+	if provider != "" {
+		return provider
+	}
+	return "e2e"
+}
+
 func (h *GPUPoolHandlers) provisionStatePaths() []string {
 	root := h.automicaRoot()
 	reg := filepath.Join(root, "services/pipeline/registry")
-	return []string{
+	paths := []string{
 		filepath.Join(reg, ".gpu_provision_state.json"),
 		filepath.Join(reg, ".e2e_provision_state.json"),
 	}
+	if matches, err := filepath.Glob(filepath.Join(reg, ".gpu_provision_state*.json")); err == nil {
+		for _, m := range matches {
+			paths = append(paths, m)
+		}
+	}
+	return paths
+}
+
+// providerNodeStillLive returns true when destroy claimed success but the VM is still present.
+func (h *GPUPoolHandlers) providerNodeStillLive(ctx context.Context, serviceTag, provider, nodeID, publicIP string) bool {
+	root := h.automicaRoot()
+	provider = inferProvider(nodeID, provider)
+	env := append(os.Environ(),
+		"AUTOMICA_ROOT="+root,
+		"GPU_PROVIDER="+provider,
+		"GPU_SERVICE_TAG="+serviceTag,
+	)
+	if h.provisionConfigService != nil && serviceTag != "" {
+		if cfg, err := h.provisionConfigService.GetOrDefault(ctx, serviceTag); err == nil && cfg != nil {
+			env = append(env, h.provisionConfigService.WorkerEnv(cfg)...)
+			env = append(env, "GPU_PROVIDER="+provider)
+		}
+	}
+	if nodeID != "" {
+		cmd := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts/gpu_provision_node.sh"), "node-live")
+		cmd.Dir = root
+		cmd.Env = env
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+	cmd := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts/gpu_provision_node.sh"), "list-nodes")
+	cmd.Dir = root
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("destroy verify list-nodes failed provider=%s: %v", provider, err)
+		return true
+	}
+	text := string(out)
+	if nodeID != "" && strings.Contains(text, "id="+nodeID) {
+		return true
+	}
+	if publicIP != "" && publicIP != "-" && strings.Contains(text, publicIP) {
+		return true
+	}
+	return false
 }
 
 func (h *GPUPoolHandlers) provisionStatePath() string {
@@ -163,10 +346,7 @@ func (h *GPUPoolHandlers) nodeListed(st *provisionState) bool {
 	if st == nil || st.NodeID == "" {
 		return false
 	}
-	provider := strings.ToLower(strings.TrimSpace(st.Provider))
-	if provider == "" {
-		provider = "e2e"
-	}
+	provider := inferProvider(st.NodeID, st.Provider)
 	root := h.automicaRoot()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -200,6 +380,12 @@ func provisionStateReusable(st *provisionState) bool {
 	}
 }
 
+// Prefer reuse whenever the tracked state still looks alive, even if the provider
+// list is briefly stale. That avoids tearing down a live node on a false negative.
+func shouldReuseProvisionNode(st *provisionState, nodeLive bool) bool {
+	return provisionStateReusable(st) || nodeLive
+}
+
 func (h *GPUPoolHandlers) bootstrapArgsForJob(ctx context.Context, job *models.Job, serviceTag, serviceName string) []string {
 	args := []string{serviceName}
 	reuseAllowed := true
@@ -210,14 +396,16 @@ func (h *GPUPoolHandlers) bootstrapArgsForJob(ctx context.Context, job *models.J
 	}
 	if reuseAllowed {
 		st, err := h.readProvisionState()
-		if err == nil && provisionStateReusable(st) {
-			if h.nodeListed(st) {
-				log.Printf("provision attempt=%d/%d: reusing live node ip=%s status=%s", job.Attempts, job.MaxAttempts, st.PublicIP, st.Status)
-				return append(args, "--reuse-node")
-			}
-			if job.Attempts > 1 {
-				h.clearProvisionState()
-				log.Printf("provision retry attempt=%d/%d: fresh create (state not live)", job.Attempts, job.MaxAttempts)
+		if err == nil && shouldReuseProvisionNode(st, h.nodeListed(st)) {
+			log.Printf("provision attempt=%d/%d: reusing tracked GPU node ip=%s status=%s", job.Attempts, job.MaxAttempts, st.PublicIP, st.Status)
+			return append(args, "--reuse-node")
+		}
+		if job.Attempts > 1 {
+			h.clearProvisionState()
+			if err == nil {
+				log.Printf("provision retry attempt=%d/%d: tracked node not listed; fresh create", job.Attempts, job.MaxAttempts)
+			} else {
+				log.Printf("provision retry attempt=%d/%d: no reusable state; fresh create", job.Attempts, job.MaxAttempts)
 			}
 		}
 	} else if job.Attempts > 1 {
@@ -335,10 +523,15 @@ func (h *GPUPoolHandlers) runPipeline(ctx context.Context, jl *jobLog, job *mode
 	cmd := exec.CommandContext(watchCtx, "bash", pipeline, serviceName)
 	cmdPtr.Store(cmd)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), append(h.workerBootstrapEnv(root, job),
+	env := append(os.Environ(), append(h.workerBootstrapEnv(root, job),
 		"PIPELINE_STAGE="+stages,
-		"PIPELINE_PROFILE=beta",
 	)...)
+	// Capture IP before gateway stages: shared state files can disappear under reconcile.
+	if st, err := h.readProvisionState(); err == nil && strings.TrimSpace(st.PublicIP) != "" {
+		ip := strings.TrimSpace(st.PublicIP)
+		env = append(env, "E2E_HOST_IP="+ip, "GPU_PUBLIC_IP="+ip)
+	}
+	cmd.Env = env
 
 	var out bytes.Buffer
 	writers := []io.Writer{&out}
@@ -365,6 +558,50 @@ func (h *GPUPoolHandlers) runPipeline(ctx context.Context, jl *jobLog, job *mode
 		return fmt.Errorf("pipeline %s: %w\n%s", stages, err, out.String())
 	}
 	return nil
+}
+
+func (h *GPUPoolHandlers) servicePortOnNode(ctx context.Context, serviceName string) string {
+	root := h.automicaRoot()
+	script := `set -euo pipefail
+root="$1"
+service="$2"
+source "$root/services/pipeline/pipeline_common.sh"
+load_service_config "$service"
+printf '%s' "${E2E_PORT:-}"
+`
+	cmd := exec.CommandContext(ctx, "bash", "-s", "--", root, serviceName)
+	cmd.Dir = root
+	cmd.Stdin = strings.NewReader(script)
+	cmd.Env = append(os.Environ(), "AUTOMICA_ROOT="+root)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (h *GPUPoolHandlers) serviceHealthyOnNode(ctx context.Context, serviceName string) bool {
+	if serviceName == "" {
+		return false
+	}
+	port := h.servicePortOnNode(ctx, serviceName)
+	if port == "" {
+		return false
+	}
+	// Keep this deliberately small: it is a retry shortcut, not the acceptance smoke.
+	// /health is enough here because the pipeline already runs the real OCR smoke path
+	// before marking the pool ready.
+	sshHost := "e2e"
+	if st, err := h.readProvisionState(); err == nil && st != nil {
+		if inferProvider(st.NodeID, st.Provider) == "aws" {
+			sshHost = "vlm-aws"
+		}
+	}
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", sshHost,
+		fmt.Sprintf("curl -sf --connect-timeout 5 --max-time 10 http://127.0.0.1:%s/health >/dev/null", port))
+	cmd.Dir = h.automicaRoot()
+	cmd.Env = append(os.Environ(), "AUTOMICA_ROOT="+h.automicaRoot())
+	return cmd.Run() == nil
 }
 
 func (h *GPUPoolHandlers) readProvisionState() (*provisionState, error) {
@@ -412,11 +649,30 @@ func (h *GPUPoolHandlers) markProvisionFailed(ctx context.Context, serviceTag, e
 			}
 		}
 	}
-	_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
+	updates := map[string]any{
 		"state":        models.GPUPoolStateFailed,
 		"lastError":    services.SanitizeGPUPoolUserError(errMsg, hintMin),
 		"lastErrorRaw": errMsg,
-	})
+	}
+	if st, err := h.readProvisionState(); err == nil {
+		nodeLive := h.nodeListed(st)
+		if shouldReuseProvisionNode(st, nodeLive) {
+			if st.NodeID != "" {
+				updates["nodeId"] = st.NodeID
+			}
+			if st.PublicIP != "" {
+				updates["publicIp"] = st.PublicIP
+			}
+			if st.PreviousPublicIP != "" {
+				updates["previousPublicIp"] = st.PreviousPublicIP
+			}
+			if provider := strings.TrimSpace(st.Provider); provider != "" {
+				updates["provider"] = provider
+			}
+			log.Printf("provision failed for %s but node is still SSH-reusable; preserving node metadata for grace reuse", serviceTag)
+		}
+	}
+	_, err := h.poolRepo.Update(ctx, serviceTag, updates)
 	if err != nil {
 		log.Printf("mark provision failed for %s: %v", serviceTag, err)
 		return
@@ -426,8 +682,17 @@ func (h *GPUPoolHandlers) markProvisionFailed(ctx context.Context, serviceTag, e
 	}
 }
 
-func (h *GPUPoolHandlers) failProvisionIfFinal(ctx context.Context, job *models.Job, serviceTag string, err error) error {
-	if err != nil && (job.Attempts >= job.MaxAttempts || services.IsTerminalProvisionError(err.Error())) {
+func (h *GPUPoolHandlers) failProvisionIfFinal(ctx context.Context, job *models.Job, pool *models.GPUPool, serviceTag string, err error) error {
+	if err == nil {
+		return nil
+	}
+	terminal := services.IsTerminalProvisionError(err.Error())
+	if terminal && pool != nil && pool.RefCount == 0 {
+		if abortErr := h.gpuPoolService.AdminAbortProvision(ctx, serviceTag); abortErr != nil {
+			log.Printf("terminal provision abort failed for %s: %v", serviceTag, abortErr)
+		}
+	}
+	if job.Attempts >= job.MaxAttempts || terminal {
 		h.markProvisionFailed(ctx, serviceTag, err.Error())
 	}
 	return err
@@ -449,11 +714,11 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 
 	pool, err := h.poolRepo.GetByServiceTag(ctx, serviceTag)
 	if err != nil {
-		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+		return h.failProvisionIfFinal(ctx, job, pool, serviceTag, err)
 	}
 	if pool == nil {
 		err = fmt.Errorf("gpu pool not found: %s", serviceTag)
-		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+		return h.failProvisionIfFinal(ctx, job, nil, serviceTag, err)
 	}
 	if pool.RefCount == 0 {
 		log.Printf("provision skipped: refCount=0 for %s", serviceTag)
@@ -462,19 +727,35 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 		}
 		return nil
 	}
+	if pool.State == models.GPUPoolStateDraining {
+		log.Printf("provision skipped: pool is draining for %s", serviceTag)
+		return nil
+	}
 
 	// Full bootstrap on the GPU node (provider from policy: E2E Networks and/or AWS).
-	bootstrapArgs := h.bootstrapArgsForJob(ctx, job, serviceTag, serviceName)
-	if err := h.runScript(ctx, jl, job, "scripts/gpu_bootstrap.sh", bootstrapArgs...); err != nil {
-		if worker.IsJobCancelled(err) {
-			return nil
+	skipBootstrap := false
+	healthCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	skipBootstrap = h.serviceHealthyOnNode(healthCtx, serviceName)
+	cancel()
+	if skipBootstrap {
+		log.Printf("provision attempt=%d/%d: service already healthy; resuming post-bootstrap stages for %s", job.Attempts, job.MaxAttempts, serviceTag)
+		if jl != nil {
+			jl.writeLine("worker", fmt.Sprintf("resume: service already healthy; skipping bootstrap for %s", serviceTag))
 		}
-		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+	}
+	if !skipBootstrap {
+		bootstrapArgs := h.bootstrapArgsForJob(ctx, job, serviceTag, serviceName)
+		if err := h.runScript(ctx, jl, job, "scripts/gpu_bootstrap.sh", bootstrapArgs...); err != nil {
+			if worker.IsJobCancelled(err) {
+				return nil
+			}
+			return h.failProvisionIfFinal(ctx, job, pool, serviceTag, err)
+		}
 	}
 
 	pool, err = h.poolRepo.GetByServiceTag(ctx, serviceTag)
 	if err != nil {
-		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+		return h.failProvisionIfFinal(ctx, job, pool, serviceTag, err)
 	}
 	if pool != nil && pool.RefCount == 0 {
 		cont, handleErr := h.gpuPoolService.HandleProvisionNoSessions(ctx, serviceTag, false)
@@ -487,16 +768,16 @@ func (h *GPUPoolHandlers) handleProvision(ctx context.Context, job *models.Job) 
 	}
 
 	// Gateway + beta registry + Mongo pool ready (same stages as Mac bootstrap pipeline).
-	if err := h.runPipeline(ctx, jl, job, serviceName, "gateway,gateway-smoke,beta-seed,gpu-pool-sync"); err != nil {
+	if err := h.runPipeline(ctx, jl, job, serviceName, gpuPoolPostBootstrapStages(serviceTag)); err != nil {
 		if worker.IsJobCancelled(err) {
 			return nil
 		}
-		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+		return h.failProvisionIfFinal(ctx, job, pool, serviceTag, err)
 	}
 
 	pool, err = h.poolRepo.GetByServiceTag(ctx, serviceTag)
 	if err != nil {
-		return h.failProvisionIfFinal(ctx, job, serviceTag, err)
+		return h.failProvisionIfFinal(ctx, job, pool, serviceTag, err)
 	}
 	if pool != nil && pool.RefCount == 0 {
 		if _, handleErr := h.gpuPoolService.HandleProvisionNoSessions(ctx, serviceTag, true); handleErr != nil {
@@ -531,21 +812,42 @@ func (h *GPUPoolHandlers) handleDestroy(ctx context.Context, job *models.Job) er
 			log.Printf("destroy cancelled: refCount=%d for %s", pool.RefCount, serviceTag)
 			return nil
 		}
+		// OCR (or any pool) must not terminate a VM still serving another pool — that caused
+		// repeated gateway 502s when orphan-recover stole Sign Verify's AWS nodeId.
+		if pool != nil && h.gpuPoolService != nil {
+			if claimed, claimErr := h.gpuPoolService.NodeClaimedByOtherPool(ctx, serviceTag, pool.NodeID, pool.PublicIP); claimErr != nil {
+				return claimErr
+			} else if claimed != nil {
+				log.Printf("destroy detach-only: nodeId=%s ip=%s still owned by %s (ref=%d state=%s); clearing %s claim",
+					pool.NodeID, pool.PublicIP, claimed.ServiceTag, claimed.RefCount, claimed.State, serviceTag)
+				_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
+					"state":          models.GPUPoolStateIdle,
+					"refCount":       0,
+					"nodeId":         "",
+					"publicIp":       "",
+					"drainStartedAt": nil,
+					"drainReason":    "",
+					"destroyAt":      nil,
+					"readyAt":        nil,
+					"lastError":      "",
+					"lastErrorRaw":   "",
+				})
+				return err
+			}
+		}
 		switch {
 		case pool != nil && pool.NodeID != "":
 			// Mac bootstrap writes nodeId to Mongo via gpu-pool-sync; dev2 has no local state file.
-			log.Printf("destroy: Mongo nodeId=%s serviceTag=%s", pool.NodeID, serviceTag)
+			provider := inferProvider(pool.NodeID, pool.Provider)
+			log.Printf("destroy: provider=%s Mongo nodeId=%s serviceTag=%s", provider, pool.NodeID, serviceTag)
 			extraEnv := []string{}
-			if pool.Provider != "" {
-				extraEnv = append(extraEnv, "GPU_PROVIDER="+pool.Provider)
-			}
+			extraEnv = append(extraEnv, "GPU_PROVIDER="+provider)
 			destroyErr = h.runScriptWithExtraEnv(ctx, jl, job, extraEnv, "scripts/gpu_provision_node.sh", "destroy", pool.NodeID)
 		case pool != nil && pool.PublicIP != "":
-			log.Printf("destroy: resolve by publicIp=%s serviceTag=%s", pool.PublicIP, serviceTag)
+			provider := inferProvider(pool.NodeID, pool.Provider)
+			log.Printf("destroy: provider=%s resolve by publicIp=%s serviceTag=%s", provider, pool.PublicIP, serviceTag)
 			extraEnv := []string{"E2E_DESTROY_PUBLIC_IP=" + pool.PublicIP}
-			if pool.Provider != "" {
-				extraEnv = append(extraEnv, "GPU_PROVIDER="+pool.Provider)
-			}
+			extraEnv = append(extraEnv, "GPU_PROVIDER="+provider)
 			destroyErr = h.runScriptWithExtraEnv(ctx, jl, job,
 				extraEnv,
 				"scripts/gpu_provision_node.sh", "destroy")
@@ -556,9 +858,38 @@ func (h *GPUPoolHandlers) handleDestroy(ctx context.Context, job *models.Job) er
 		destroyErr = h.runScript(ctx, jl, job, "scripts/gpu_bootstrap.sh", "--destroy")
 	}
 	if destroyErr != nil {
-		log.Printf("destroy script warning (continuing to reset pool state): %v", destroyErr)
+		log.Printf("destroy script failed; preserving pool state for retry: %v", destroyErr)
+		if serviceTag != "" {
+			_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
+				"state":        models.GPUPoolStateDraining,
+				"lastError":    services.SanitizeGPUPoolUserError(destroyErr.Error(), 15),
+				"lastErrorRaw": destroyErr.Error(),
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return destroyErr
 	}
+	// Honest idle: only clear Mongo when the provider confirms the node is gone.
 	if serviceTag != "" {
+		poolAfter, _ := h.poolRepo.GetByServiceTag(ctx, serviceTag)
+		if poolAfter != nil && (strings.TrimSpace(poolAfter.NodeID) != "" || strings.TrimSpace(poolAfter.PublicIP) != "") {
+			provider := inferProvider(poolAfter.NodeID, poolAfter.Provider)
+			if h.providerNodeStillLive(ctx, serviceTag, provider, poolAfter.NodeID, poolAfter.PublicIP) {
+				msg := fmt.Sprintf("destroy reported success but provider still has nodeId=%s ip=%s", poolAfter.NodeID, poolAfter.PublicIP)
+				log.Printf("%s", msg)
+				_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
+					"state":        models.GPUPoolStateDraining,
+					"lastError":    services.SanitizeGPUPoolUserError(msg, 15),
+					"lastErrorRaw": msg,
+				})
+				if err != nil {
+					return err
+				}
+				return fmt.Errorf("%s", msg)
+			}
+		}
 		_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
 			"state":          models.GPUPoolStateIdle,
 			"refCount":       0,
@@ -590,6 +921,26 @@ func (h *GPUPoolHandlers) handleGraceDestroy(ctx context.Context, job *models.Jo
 	if pool.RefCount > 0 {
 		log.Printf("grace_destroy cancelled: refCount=%d for %s", pool.RefCount, serviceTag)
 		return nil
+	}
+	if h.gpuPoolService != nil {
+		if claimed, claimErr := h.gpuPoolService.NodeClaimedByOtherPool(ctx, serviceTag, pool.NodeID, pool.PublicIP); claimErr != nil {
+			return claimErr
+		} else if claimed != nil {
+			log.Printf("grace_destroy detach-only: node still owned by %s; clearing %s claim", claimed.ServiceTag, serviceTag)
+			_, err := h.poolRepo.Update(ctx, serviceTag, map[string]any{
+				"state":          models.GPUPoolStateIdle,
+				"refCount":       0,
+				"nodeId":         "",
+				"publicIp":       "",
+				"drainStartedAt": nil,
+				"drainReason":    "",
+				"destroyAt":      nil,
+				"readyAt":        nil,
+				"lastError":      "",
+				"lastErrorRaw":   "",
+			})
+			return err
+		}
 	}
 	if pool.State != models.GPUPoolStateDraining {
 		log.Printf("grace_destroy skipped: state=%s for %s", pool.State, serviceTag)

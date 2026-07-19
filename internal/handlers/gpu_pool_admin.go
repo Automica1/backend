@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,9 +208,9 @@ func (h *GPUPoolHandler) GetJobLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	utils.SendJSONResponse(w, http.StatusOK, map[string]any{
-		"path":   path,
-		"lines":  lines,
-		"jobId":  jobIDFromJob(job),
+		"path":    path,
+		"lines":   lines,
+		"jobId":   jobIDFromJob(job),
 		"jobType": jobTypeFromJob(job),
 	})
 }
@@ -295,7 +297,12 @@ func (h *GPUPoolHandler) probePool(ctx context.Context, pool *models.GPUPool) ma
 	if nodeLive {
 		port := os.Getenv("E2E_PORT")
 		if port == "" {
-			port = "5011"
+			switch pool.ServiceTag {
+			case models.OCRGPUServiceTag:
+				port = "5006"
+			default:
+				port = "5011"
+			}
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
@@ -314,18 +321,54 @@ func (h *GPUPoolHandler) probePool(ctx context.Context, pool *models.GPUPool) ma
 		summary = append(summary, "On-node deploy health: no node")
 	}
 
+	providerNodeCount := 0
+	providerNodes := []map[string]any{}
+	listCmd := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts/gpu_provision_node.sh"), "list-nodes")
+	listCmd.Dir = root
+	listCmd.Env = append(os.Environ(), "AUTOMICA_ROOT="+root, "GPU_PROVIDER="+provider)
+	if out, err := listCmd.CombinedOutput(); err == nil {
+		reCount := regexp.MustCompile(`count=(\d+)`)
+		reNode := regexp.MustCompile(`id=([^\s]+)\s+status=([^\s]+)\s+ip=([^\s]+)\s+name=(.+)$`)
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			if providerNodeCount == 0 {
+				if m := reCount.FindStringSubmatch(line); len(m) == 2 {
+					if n, convErr := strconv.Atoi(m[1]); convErr == nil {
+						providerNodeCount = n
+					}
+				}
+			}
+			if m := reNode.FindStringSubmatch(line); len(m) == 5 {
+				providerNodes = append(providerNodes, map[string]any{
+					"id":       strings.TrimSpace(m[1]),
+					"status":   strings.TrimSpace(m[2]),
+					"publicIp": strings.TrimSpace(m[3]),
+					"name":     strings.TrimSpace(m[4]),
+				})
+			}
+		}
+		if providerNodeCount == 0 {
+			providerNodeCount = len(providerNodes)
+		}
+		summary = append(summary, fmt.Sprintf("Provider node list: %d node(s)", providerNodeCount))
+	} else {
+		summary = append(summary, "Provider node list: unavailable")
+	}
+
 	return map[string]any{
-		"serviceTag":    pool.ServiceTag,
-		"state":         pool.State,
-		"provider":      provider,
-		"providerLabel": displayProbeProvider(provider),
-		"nodeLive":      nodeLive,
-		"gatewayHealth": gatewayOK,
-		"publicIp":      pool.PublicIP,
-		"nodeId":        pool.NodeID,
-		"policySummary": h.provisionConfigService.EffectiveSummary(cfg),
-		"summary":       summary,
-		"probedAt":      time.Now().UTC().Format(time.RFC3339),
+		"serviceTag":        pool.ServiceTag,
+		"state":             pool.State,
+		"provider":          provider,
+		"providerLabel":     displayProbeProvider(provider),
+		"nodeLive":          nodeLive,
+		"gatewayHealth":     gatewayOK,
+		"publicIp":          pool.PublicIP,
+		"nodeId":            pool.NodeID,
+		"providerNodeCount": providerNodeCount,
+		"providerNodes":     providerNodes,
+		"policySummary":     h.provisionConfigService.EffectiveSummary(cfg),
+		"summary":           summary,
+		"probedAt":          time.Now().UTC().Format(time.RFC3339),
 	}
 }
 
@@ -356,6 +399,37 @@ func (h *GPUPoolHandler) AdminRetryProvision(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	utils.SendJSONResponse(w, http.StatusOK, map[string]any{"ok": true, "serviceTag": tag})
+}
+
+func (h *GPUPoolHandler) AdminRecover(w http.ResponseWriter, r *http.Request) {
+	tag := chi.URLParam(r, "serviceTag")
+	report, err := h.gpuPoolService.AdminRecover(r.Context(), tag)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, report)
+}
+
+func (h *GPUPoolHandler) ListInventory(w http.ResponseWriter, r *http.Request) {
+	tag := chi.URLParam(r, "serviceTag")
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	inv, err := h.gpuPoolService.ListInventory(r.Context(), tag, provider)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, inv)
+}
+
+func (h *GPUPoolHandler) AdminWarmStart(w http.ResponseWriter, r *http.Request) {
+	tag := chi.URLParam(r, "serviceTag")
+	pool, err := h.gpuPoolService.AdminWarmStart(r.Context(), tag)
+	if err != nil {
+		utils.SendErrorResponse(w, err)
+		return
+	}
+	utils.SendJSONResponse(w, http.StatusOK, h.enrichAdminPool(r.Context(), pool))
 }
 
 func (h *GPUPoolHandler) GetSupport(w http.ResponseWriter, r *http.Request) {

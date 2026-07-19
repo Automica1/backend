@@ -53,16 +53,7 @@ func (h *GuestPassHandler) ValidatePass(w http.ResponseWriter, r *http.Request) 
 		serviceSlug = body.ServiceSlug
 	}
 
-	_, err := h.guestPassService.ValidateKey(r.Context(), key)
-	if err != nil {
-		utils.SendJSONResponse(w, http.StatusOK, models.GuestPassValidateResponse{
-			Message: "Invalid guest pass",
-			Valid:   false,
-		})
-		return
-	}
-
-	balance, err := h.guestPassService.GetBalance(r.Context(), key, serviceSlug)
+	pass, err := h.guestPassService.ValidateKey(r.Context(), key)
 	if err != nil {
 		utils.SendJSONResponse(w, http.StatusOK, models.GuestPassValidateResponse{
 			Message: "Invalid guest pass",
@@ -72,11 +63,9 @@ func (h *GuestPassHandler) ValidatePass(w http.ResponseWriter, r *http.Request) 
 	}
 
 	utils.SendJSONResponse(w, http.StatusOK, models.GuestPassValidateResponse{
-		Message:          "Guest pass is valid",
-		Valid:            true,
-		RemainingCredits: balance.RemainingCredits,
-		AllowedServices:  balance.AllowedServices,
-		ServiceAllowed:   balance.ServiceAllowed,
+		Message:        "Guest pass is valid",
+		Valid:          true,
+		ServiceAllowed: serviceSlug == "" || pass.AllowsService(serviceSlug),
 	})
 }
 

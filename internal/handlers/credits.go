@@ -112,11 +112,48 @@ func (h *CreditsHandler) AddCredits(w http.ResponseWriter, r *http.Request) {
 	utils.SendJSONResponse(w, http.StatusOK, response)
 }
 
+// resolveUserID resolves the authenticated caller's user ID from the request
+// context: API key context first, then email lookup (same pattern as GPUPoolHandler).
+func (h *CreditsHandler) resolveUserID(r *http.Request) (string, error) {
+	if userID, ok := middleware.GetUserIDFromContext(r.Context()); ok && userID != "" {
+		return userID, nil
+	}
+	email, ok := middleware.GetEmailFromContext(r.Context())
+	if !ok {
+		return "", apperrors.NewAppError(apperrors.ErrUnauthorized, http.StatusUnauthorized, "authentication required")
+	}
+	user, err := h.userService.GetUserByEmail(r.Context(), email)
+	if err != nil {
+		return "", err
+	}
+	return user.UserID, nil
+}
+
 func (h *CreditsHandler) DeductCredits(w http.ResponseWriter, r *http.Request) {
 	var req models.DeductCreditsRequest
 	if err := utils.DecodeJSONBody(r, &req); err != nil {
 		utils.SendErrorResponse(w, err)
 		return
+	}
+
+	// Only admins may deduct credits from an arbitrary user. Non-admin callers
+	// always operate on their own account: the user ID is derived server-side,
+	// and a body targeting a different user is rejected.
+	if !middleware.IsAdminFromContext(r.Context()) {
+		callerID, err := h.resolveUserID(r)
+		if err != nil {
+			utils.SendErrorResponse(w, err)
+			return
+		}
+		if req.UserID != "" && req.UserID != callerID {
+			utils.SendErrorResponse(w, apperrors.NewAppError(
+				apperrors.ErrForbidden,
+				http.StatusForbidden,
+				"cannot deduct credits for another user",
+			))
+			return
+		}
+		req.UserID = callerID
 	}
 
 	response, err := h.creditsService.DeductCredits(r.Context(), &req)
